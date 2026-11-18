@@ -27,3 +27,18 @@ assert got["profile"]["about"] == "new" and got["profile"]["extra"] == "kept" an
 assert got["schedule"] == {"days": ["Mon", "Thu"], "times": ["09:00", "18:30"], "draft_hours_ahead": 24}, got["schedule"]
 assert got["model"] == "gemini-3.8-flash"
 print("ok form")
+
+# voice learning: edited posts first, then the rest; prompt carries examples and prefs
+from app import build_prompt, voice_examples
+rows = [("new plain", "new plain"), ("edited by me", "ai wrote this"), ("old plain", None), ("older edit", "x")]
+assert voice_examples(rows) == ["edited by me", "older edit", "new plain"], voice_examples(rows)
+system, prompt = build_prompt({"topics": ["t1"]}, examples=["EX1"], prefs=["shorter"], feedback="punchier", current="draft")
+assert "EX1" in system and "- shorter" in system and "Feedback to apply: punchier" in prompt and "Rewrite this draft:\ndraft" in prompt
+system, _ = build_prompt({"topics": ["t1"]})
+assert "actually published" not in system and "Standing preferences" not in system
+print("ok voice")
+
+from app import PLACEHOLDER
+assert PLACEHOLDER.search("adding only [X ms] of overhead")[0] == "[X ms]"
+assert not PLACEHOLDER.search("plain post with (parens) and #tags")
+print("ok placeholder")
