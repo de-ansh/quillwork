@@ -92,10 +92,34 @@ def upcoming_slots(s, days=14, now=None):
 
 
 # ---------- AI ----------
-def write_post(s, c, idea=None, feedback=None, current=None):
+def gemini(s, system, prompt):
     from google import genai  # imported lazily so the UI still starts without the SDK/key
     from google.genai import types
 
+    global GEMINI
+    GEMINI = GEMINI or genai.Client()  # must outlive the call: a throwaway Client closes its HTTP pool mid-request
+    r = GEMINI.models.generate_content(model=s.get("model", "gemini-3.8-flash"), contents=prompt,
+                                       config=types.GenerateContentConfig(system_instruction=system))
+    text = (r.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned an empty post")
+    return text
+
+
+def write_x(s, text):
+    """Condense a LinkedIn post into one X post (280 chars max)."""
+    p = s["profile"]
+    system = ("You adapt LinkedIn posts for X (Twitter) for one person, in their voice.\n"
+              f"Voice: {p.get('voice', '')}\nAvoid: {p.get('avoid', '')}\n"
+              "Output one X post only: plain text, at most 270 characters including spaces, at most 2 hashtags, "
+              "no preamble, no quotes around it.")
+    out = gemini(s, system, f"Turn this LinkedIn post into a single X post that keeps the hook and the main takeaway:\n\n{text}")
+    if len(out) > 280:
+        out = gemini(s, system, f"Shorten this to under 270 characters, same meaning and voice:\n\n{out}")
+    return out
+
+
+def write_post(s, c, idea=None, feedback=None, current=None):
     p = s["profile"]
     recent = [r[0][:300] for r in c.execute("SELECT text FROM posts WHERE text IS NOT NULL ORDER BY id DESC LIMIT 8")]
     system = (
@@ -111,16 +135,7 @@ def write_post(s, c, idea=None, feedback=None, current=None):
         parts.append(f"Rewrite this draft:\n{current}")
     if feedback:
         parts.append(f"Feedback to apply: {feedback}")
-    global GEMINI
-    GEMINI = GEMINI or genai.Client()  # must outlive the call: a throwaway Client closes its HTTP pool mid-request
-    r = GEMINI.models.generate_content(
-        model=s.get("model", "gemini-3.8-flash"), contents="\n\n".join(parts),
-        config=types.GenerateContentConfig(system_instruction=system),
-    )
-    text = (r.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned an empty post")
-    return text
+    return gemini(s, system, "\n\n".join(parts))
 
 
 # ---------- LinkedIn ----------
@@ -233,8 +248,12 @@ def act(f):
     pid, do, text = int(f.get("id", 0)), f.get("do"), f.get("text", "").strip()
     with LOCK, db() as c:
         p = c.execute("SELECT * FROM posts WHERE id=?", (pid,)).fetchone()
-        if not p or p["status"] == "published":
-            return "Post not found or already published"
+        if not p:
+            return "Post not found"
+        if p["status"] == "published" and do not in ("x_generate", "x_save"):
+            return "Already published"
+        if f.get("x_text") is not None:
+            c.execute("UPDATE posts SET x_text=? WHERE id=?", (f["x_text"].strip() or None, pid))
         if do in ("approve", "save", "post_now"):
             if not 0 < len(text) <= 3000:
                 return "Post must be 1 to 3000 characters"
@@ -253,6 +272,11 @@ def act(f):
             new = write_post(load_settings(), c, idea=p["idea"], feedback=f.get("feedback"), current=text or p["text"])
             c.execute("UPDATE posts SET text=?, status='draft', error=NULL WHERE id=?", (new, pid))
             msg = "Regenerated"
+        elif do == "x_generate":
+            c.execute("UPDATE posts SET x_text=? WHERE id=?", (write_x(load_settings(), text or p["text"]), pid))
+            msg = "X version written"
+        elif do == "x_save":
+            msg = "X text saved"
         elif do == "post_now":
             c.commit()
             return publish(c, c.execute("SELECT * FROM posts WHERE id=?", (pid,)).fetchone())
@@ -329,18 +353,22 @@ label.f small{font-weight:400;color:var(--muted)}
 .day input:checked+span{background:var(--ink);color:var(--ink-fg);border-color:var(--ink)}
 .day input:focus-visible+span{outline:2px solid var(--gold)}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:0 14px}
+.x{border-top:1px dashed var(--line);margin-top:14px;padding-top:12px}
 .save{position:sticky;bottom:0;background:var(--bg);padding:12px 0;margin-top:16px;border-top:1px solid var(--line)}
 """
 
 JS = """
-document.querySelectorAll('textarea').forEach(t=>{const c=t.dataset.count!==undefined&&t.form.querySelector('.count');
- const f=()=>{if(c){const n=t.value.length;c.textContent=n+' / 3000';c.classList.toggle('over',n>3000)}
+document.querySelectorAll('textarea').forEach(t=>{const c=t.dataset.count!==undefined&&t.parentElement.querySelector('.count');
+ const max=+(t.dataset.max||3000);
+ const f=()=>{if(c){const n=t.value.length;c.textContent=n+' / '+max;c.classList.toggle('over',n>max)}
   if(t.value){t.style.height='auto';t.style.height=(t.scrollHeight+2)+'px'}};
  t.addEventListener('input',f);f()});
 document.addEventListener('submit',e=>{const b=e.submitter;
  if(b&&b.dataset.confirm&&!confirm(b.dataset.confirm)){e.preventDefault();return}
  // disable after the browser has captured the clicked button's value
  setTimeout(()=>{e.target.querySelectorAll('button').forEach(x=>x.disabled=true);if(b&&b.dataset.busy)b.textContent=b.dataset.busy},0)});
+document.addEventListener('click',e=>{const b=e.target.closest('[data-share-x]');if(!b)return;
+ const t=b.closest('.x').querySelector('textarea');window.open('https://x.com/intent/tweet?text='+encodeURIComponent(t.value),'_blank','noopener')});
 if(location.search.includes('msg='))history.replaceState(null,'',location.pathname);
 """
 
@@ -366,6 +394,18 @@ def layout(title, body, msg="", page="posts"):
             f"<header class=top>{LOGO}<b>Quillwork</b><nav>{nav}</nav></header>{flash}{body}</div><script>{JS}</script></body></html>")
 
 
+def x_block(p):
+    if not p["text"]:
+        return ""
+    if not p["x_text"]:
+        return "<div class=x><div class=actions><button name=do value=x_generate data-busy='Writing…'>Make X version</button></div></div>"
+    return ("<div class=x><label class=eyebrow for=x{0}>X version</label>"
+            "<textarea id=x{0} name=x_text rows=3 data-count data-max=280>{1}</textarea><div class=row><span class=count></span></div>"
+            "<div class=actions><button type=button data-share-x>Share on X</button>"
+            "<button name=do value=x_save>Save X text</button>"
+            "<button name=do value=x_generate data-busy='Writing…'>Rewrite for X</button></div></div>").format(p["id"], esc(p["x_text"]))
+
+
 def card(p):
     st = p["status"]
     idea = f"<span class=idea>Idea: {esc(p['idea'])}</span>" if p["idea"] else ""
@@ -376,7 +416,8 @@ def card(p):
         link = (f" · <a href='https://www.linkedin.com/feed/update/{esc(p['linkedin_id'])}/' target=_blank rel=noopener>View on LinkedIn</a>"
                 if p["linkedin_id"] else "")
         when = pretty(p["published"][:16]) if p["published"] else ""
-        return f"<article class=post>{head}<p class=body>{esc(p['text'] or '')}</p><p class=hint>Published {when}{link}</p></article>"
+        return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}"
+                f"<p class=body>{esc(p['text'] or '')}</p><p class=hint>Published {when}{link}</p>{x_block(p)}</form>")
     editable = st in ("draft", "approved", "failed")
     post_now = "<button name=do value=post_now class=danger data-confirm='Publish this post on LinkedIn right now?' data-busy='Posting…'>Post now</button>"
     if editable:
@@ -391,7 +432,7 @@ def card(p):
         actions, extra = post_now, "<div class=row><span class=count></span></div>"
     return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
             f"<textarea name=text rows=8 data-count aria-label='Post text'>{esc(p['text'] or '')}</textarea>{extra}"
-            f"<div class=actions>{actions}</div></form>")
+            f"<div class=actions>{actions}</div>{x_block(p)}</form>")
 
 
 def page_home(msg):
@@ -475,7 +516,9 @@ def init():
         SETTINGS.write_text((ROOT / "settings.example.json").read_text())
     with db() as c:
         c.execute("CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, slot TEXT UNIQUE, idea TEXT, text TEXT, "
-                  "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT)")
+                  "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT, x_text TEXT)")
+        if "x_text" not in [r[1] for r in c.execute("PRAGMA table_info(posts)")]:
+            c.execute("ALTER TABLE posts ADD COLUMN x_text TEXT")
 
 
 @asynccontextmanager
@@ -537,9 +580,9 @@ def callback(state: str = "", code: str = "", error: str = "", error_description
 
 
 @app.post("/action", dependencies=[Depends(same_origin)])
-def action(id: int = Form(0), do: str = Form(""), text: str = Form(""), feedback: str = Form("")):
+def action(id: int = Form(0), do: str = Form(""), text: str = Form(""), feedback: str = Form(""), x_text: str | None = Form(None)):
     try:
-        return go("/", act({"id": id, "do": do, "text": text, "feedback": feedback}))
+        return go("/", act({"id": id, "do": do, "text": text, "feedback": feedback, "x_text": x_text}))
     except Exception as e:
         return go("/", f"Error: {e}")
 
