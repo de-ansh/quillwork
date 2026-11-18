@@ -18,3 +18,12 @@ assert "days" in check_settings({**s, "schedule": {"days": ["Monday"], "times": 
 assert check_settings({**s, "schedule": {"days": ["Mon"], "times": ["9am"]}})
 assert check_settings({"schedule": s["schedule"]})
 print("ok")
+
+# settings form -> settings dict
+from app import form_to_settings
+base = {"model": "m", "profile": {"about": "old", "extra": "kept"}, "schedule": {}}
+got = form_to_settings(base, {"about": " new ", "topics": "a\n\n b \n", "times": "09:00, 18:30,", "days": ["Thu", "Mon", "Xyz"], "draft_hours_ahead": "oops"})
+assert got["profile"]["about"] == "new" and got["profile"]["extra"] == "kept" and got["profile"]["topics"] == ["a", "b"], got
+assert got["schedule"] == {"days": ["Mon", "Thu"], "times": ["09:00", "18:30"], "draft_hours_ahead": 24}, got["schedule"]
+assert got["model"] == "gemini-3.8-flash"
+print("ok form")

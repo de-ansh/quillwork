@@ -274,67 +274,200 @@ def new_from_idea(idea):
 
 
 # ---------- pages ----------
-CSS = """body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color-scheme:light dark}
-textarea,input[type=text]{width:100%;box-sizing:border-box;font:inherit;padding:6px}
-.card{border:1px solid #8885;border-radius:8px;padding:12px;margin:12px 0}.meta{font-size:13px;opacity:.75;margin-bottom:6px}
-.err{color:#d33}.msg{padding:8px 12px;border-radius:6px;background:#8882}button{margin:6px 6px 0 0;padding:6px 12px}
-nav a{margin-right:14px}h2{margin-top:28px}"""
+CSS = """
+:root{--bg:#f6f5f1;--fg:#1b2133;--muted:#626a7e;--card:#fff;--line:#e4e2da;--field:#fbfaf7;--ink:#1d2a4a;--ink-fg:#fff;
+--gold:#c98a12;--ok:#1f8a5b;--bad:#c53b3b;--info:#2f5fb3}
+@media (prefers-color-scheme:dark){:root{--bg:#0f131d;--fg:#e9ecf3;--muted:#9aa2b4;--card:#171e2e;--line:#283149;--field:#121827;
+--ink:#e9ecf5;--ink-fg:#111827;--gold:#f4b740;--ok:#4cc38a;--bad:#f07171;--info:#7aa5ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:inherit}
+.wrap{max-width:820px;margin:0 auto;padding:0 16px 64px}
+.top{display:flex;align-items:center;gap:10px;padding:18px 0 14px}
+.top svg{width:32px;height:32px;flex:none}
+.top b{font-size:18px;letter-spacing:-.01em}
+.top nav{margin-left:auto;display:flex;gap:4px}
+.top nav a{padding:6px 12px;border-radius:8px;text-decoration:none;color:var(--muted);border:1px solid transparent}
+.top nav a.on{background:var(--card);color:var(--fg);border-color:var(--line)}
+.flash{padding:10px 14px;border-radius:10px;border:1px solid var(--line);border-left:4px solid var(--ok);background:var(--card);margin:0 0 16px}
+.flash.bad{border-left-color:var(--bad)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:12px;margin-bottom:12px}
+.stat,.panel,.post{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.stat small,.eyebrow{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--bad);vertical-align:middle}
+.dot.ok{background:var(--ok)}
+.alert{color:var(--bad);border:1px solid var(--bad);border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:14px}
+.post{margin:12px 0}
+h1{font-size:22px;margin:8px 0 4px}
+h2{font-size:17px;margin:28px 0 4px;display:flex;align-items:center;gap:8px}
+.badge{font-size:12px;font-weight:600;background:var(--line);border-radius:99px;padding:1px 9px}
+textarea,input[type=text],input[type=number]{width:100%;font:inherit;color:inherit;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+textarea{resize:vertical;line-height:1.6}
+textarea:focus,input:focus{outline:2px solid var(--gold);outline-offset:1px}
+.post-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.when{font-weight:650}
+.chip{font-size:12px;font-weight:650;padding:1px 10px;border-radius:99px;border:1px solid currentColor;text-transform:capitalize}
+.chip.draft{color:var(--info)}.chip.approved,.chip.published{color:var(--ok)}.chip.failed{color:var(--bad)}.chip.skipped,.chip.missed{color:var(--muted)}
+.idea,.hint{color:var(--muted);font-size:13px}
+.err{color:var(--bad);font-size:14px;margin-bottom:8px}
+.row{display:flex;gap:10px;align-items:center;margin-top:8px}
+.count{font-size:12px;color:var(--muted);white-space:nowrap;margin-left:auto}.count.over{color:var(--bad);font-weight:650}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+button{font:inherit;font-weight:600;border-radius:10px;padding:8px 14px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
+button:hover{border-color:var(--muted)}
+button.primary{background:var(--ink);color:var(--ink-fg);border-color:var(--ink)}
+button.danger{color:var(--bad)}
+button:disabled{opacity:.55;cursor:progress}
+.body{white-space:pre-wrap;margin:0}
+details>summary{cursor:pointer;color:var(--muted);margin:28px 0 8px;font-weight:600}
+.empty{color:var(--muted);text-align:center;padding:22px;border:1px dashed var(--line);border-radius:14px;margin:12px 0}
+label.f{display:block;font-weight:600;margin:16px 0 6px}
+label.f small{font-weight:400;color:var(--muted)}
+.days{display:flex;flex-wrap:wrap;gap:6px}
+.day input{position:absolute;opacity:0;pointer-events:none}
+.day span{display:inline-block;padding:6px 14px;border:1px solid var(--line);border-radius:99px;cursor:pointer;font-weight:600}
+.day input:checked+span{background:var(--ink);color:var(--ink-fg);border-color:var(--ink)}
+.day input:focus-visible+span{outline:2px solid var(--gold)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:0 14px}
+.save{position:sticky;bottom:0;background:var(--bg);padding:12px 0;margin-top:16px;border-top:1px solid var(--line)}
+"""
+
+JS = """
+document.querySelectorAll('textarea').forEach(t=>{const c=t.dataset.count!==undefined&&t.form.querySelector('.count');
+ const f=()=>{if(c){const n=t.value.length;c.textContent=n+' / 3000';c.classList.toggle('over',n>3000)}
+  if(t.value){t.style.height='auto';t.style.height=(t.scrollHeight+2)+'px'}};
+ t.addEventListener('input',f);f()});
+document.addEventListener('submit',e=>{const b=e.submitter;
+ if(b&&b.dataset.confirm&&!confirm(b.dataset.confirm)){e.preventDefault();return}
+ // disable after the browser has captured the clicked button's value
+ setTimeout(()=>{e.target.querySelectorAll('button').forEach(x=>x.disabled=true);if(b&&b.dataset.busy)b.textContent=b.dataset.busy},0)});
+if(location.search.includes('msg='))history.replaceState(null,'',location.pathname);
+"""
+
+LOGO = ('<svg viewBox="0 0 512 512" aria-hidden="true"><rect width="512" height="512" rx="112" fill="#1d2a4a"/>'
+        '<path d="M138 392C166 292 246 172 398 102C386 168 356 212 316 236L344 240C302 302 230 354 138 392Z" fill="#fff"/>'
+        '<path d="M138 392L338 170" stroke="#1d2a4a" stroke-width="9" stroke-linecap="round"/>'
+        '<path d="M138 418Q250 440 380 410" fill="none" stroke="#f4b740" stroke-width="16" stroke-linecap="round"/></svg>')
+FAVICON = "data:image/svg+xml," + urllib.parse.quote(LOGO.replace(' aria-hidden="true"', ' xmlns="http://www.w3.org/2000/svg"'))
+BAD_MSG = re.compile(r"fail|error|must|not found|invalid|no free|passed|empty|set linkedin|unknown", re.I)
+PROFILE_TEXT = ("about", "voice", "audience", "formatting", "hashtags", "avoid")
 
 
 def pretty(slot):
     return datetime.fromisoformat(slot).strftime("%a %d %b, %H:%M")
 
 
-def layout(title, body, msg=""):
-    m = f"<p class=msg>{esc(msg)}</p>" if msg else ""
-    return (f"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{title}</title><style>{CSS}</style><nav><a href=/>Posts</a><a href=/settings>Settings</a></nav>{m}{body}</html>")
+def layout(title, body, msg="", page="posts"):
+    flash = f"<div class='flash{' bad' if BAD_MSG.search(msg) else ''}' role=status>{esc(msg)}</div>" if msg else ""
+    nav = "".join(f"<a href='{h}'{' class=on aria-current=page' if k == page else ''}>{n}</a>"
+                  for k, h, n in (("posts", "/", "Posts"), ("settings", "/settings", "Settings")))
+    return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{title}</title><link rel=icon href=\"{FAVICON}\"><style>{CSS}</style></head><body><div class=wrap>"
+            f"<header class=top>{LOGO}<b>Quillwork</b><nav>{nav}</nav></header>{flash}{body}</div><script>{JS}</script></body></html>")
 
 
 def card(p):
     st = p["status"]
-    btns = {"draft": "approve save regenerate skip post_now", "approved": "approve save regenerate skip post_now",
-            "failed": "post_now save regenerate skip", "skipped": "post_now", "missed": "post_now"}.get(st, "").split()
-    labels = {"approve": "Approve", "save": "Save edit", "regenerate": "Regenerate", "skip": "Skip", "post_now": "Post now"}
+    idea = f"<span class=idea>Idea: {esc(p['idea'])}</span>" if p["idea"] else ""
+    head = (f"<div class=post-head><span class=when>{pretty(p['slot']) if p['slot'] else 'Unscheduled'}</span>"
+            f"<span class='chip {st}'>{st}</span>{idea}</div>")
     err = f"<div class=err>{esc(p['error'])}</div>" if p["error"] else ""
-    fb = "<input type=text name=feedback placeholder='Feedback for Regenerate (optional), e.g. shorter, more personal'>" if "regenerate" in btns else ""
-    buttons = "".join(f"<button name=do value={b}>{labels[b]}</button>" for b in btns)
-    ro = "" if btns else " readonly"
-    return (f"<form class=card method=post action=/action><input type=hidden name=id value={p['id']}>"
-            f"<div class=meta>{pretty(p['slot']) if p['slot'] else 'Unscheduled'} · <b>{st}</b>{' · idea: ' + esc(p['idea']) if p['idea'] else ''}</div>{err}"
-            f"<textarea name=text rows=10 aria-label='Post text'{ro}>{esc(p['text'] or '')}</textarea>{fb}{buttons}</form>")
+    if st == "published":
+        link = (f" · <a href='https://www.linkedin.com/feed/update/{esc(p['linkedin_id'])}/' target=_blank rel=noopener>View on LinkedIn</a>"
+                if p["linkedin_id"] else "")
+        when = pretty(p["published"][:16]) if p["published"] else ""
+        return f"<article class=post>{head}<p class=body>{esc(p['text'] or '')}</p><p class=hint>Published {when}{link}</p></article>"
+    editable = st in ("draft", "approved", "failed")
+    post_now = "<button name=do value=post_now class=danger data-confirm='Publish this post on LinkedIn right now?' data-busy='Posting…'>Post now</button>"
+    if editable:
+        primary = ("<button name=do value=approve class=primary>Approve</button>" if st != "approved"
+                   else "<button name=do value=save class=primary>Save</button>")
+        actions = (primary + ("<button name=do value=save>Save edit</button>" if st != "approved" else "")
+                   + "<button name=do value=regenerate data-busy='Writing…'>Regenerate</button>"
+                   + "<button name=do value=skip data-confirm='Skip this slot? It will not be posted.'>Skip</button>" + post_now)
+        extra = ("<div class=row><input type=text name=feedback aria-label='Feedback for Regenerate' "
+                 "placeholder='Feedback for Regenerate, e.g. shorter, more personal, add a story'><span class=count></span></div>")
+    else:
+        actions, extra = post_now, "<div class=row><span class=count></span></div>"
+    return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
+            f"<textarea name=text rows=8 data-count aria-label='Post text'>{esc(p['text'] or '')}</textarea>{extra}"
+            f"<div class=actions>{actions}</div></form>")
 
 
 def page_home(msg):
     t = load_token()
     if t and t["expires_at"] > time.time():
         days = int((t["expires_at"] - time.time()) / 86400)
-        li = f"LinkedIn: connected as <b>{esc(t.get('name', ''))}</b>, token expires in {days} days" + (" (<a href=/login>reconnect</a>)" if days < 7 else "")
+        li = (f"<span class='dot ok'></span>Connected as <b>{esc(t.get('name', ''))}</b>"
+              f"<div class=hint>Token expires in {days} days{' · <a href=/login>Reconnect</a>' if days < 7 else ''}</div>")
     else:
-        li = "LinkedIn: not connected. <a href=/login>Connect LinkedIn</a>"
-    err = f"<p class=err>Scheduler error: {esc(LAST_ERROR)}</p>" if LAST_ERROR else ""
+        li = "<span class=dot></span>Not connected<div class=hint><a href=/login>Connect LinkedIn</a></div>"
     try:
-        nxt = ", ".join(pretty(slot_key(x)) for x in upcoming_slots(load_settings())[:3])
+        slots = upcoming_slots(load_settings())[:3]
+        nxt = "<br>".join(pretty(slot_key(x)) for x in slots) or "None scheduled"
     except Exception as e:
-        nxt = esc(str(e))
+        nxt = f"<span class=err>{esc(str(e))}</span>"
     with db() as c:
         todo = c.execute("SELECT * FROM posts WHERE status IN ('draft','approved','failed') ORDER BY slot").fetchall()
         done = c.execute("SELECT * FROM posts WHERE status NOT IN ('draft','approved','failed') ORDER BY slot DESC LIMIT 30").fetchall()
-    body = (f"<h1>Quillwork</h1><p>{li}</p>{err}<p class=meta>Next slots: {nxt or 'none'}</p>"
-            "<form method=post action=/idea><textarea name=idea rows=2 placeholder='Got an idea? Describe it and a draft goes into the next free slot' aria-label='Post idea' required></textarea>"
-            "<button>Write draft</button></form>"
-            f"<h2>Needs you ({len(todo)})</h2>{''.join(map(card, todo)) or '<p class=meta>Nothing to review.</p>'}"
-            f"<h2>History</h2>{''.join(map(card, done)) or '<p class=meta>No posts yet.</p>'}")
+    approved = sum(p["status"] == "approved" for p in todo)
+    alert = f"<div class=alert role=alert><b>Scheduler error:</b> {esc(LAST_ERROR)}</div>" if LAST_ERROR else ""
+    body = (f"{alert}<div class=stats><div class=stat><small>LinkedIn</small>{li}</div>"
+            f"<div class=stat><small>Next slots</small>{nxt}</div>"
+            f"<div class=stat><small>Queue</small><b>{approved}</b> approved · <b>{len(todo) - approved}</b> to review</div></div>"
+            "<form class=panel method=post action=/idea><label class=eyebrow for=idea>New idea</label>"
+            "<textarea id=idea name=idea rows=2 required placeholder='A moment, lesson or opinion. Quillwork writes it up for your next free slot.'></textarea>"
+            "<div class=actions><button class=primary data-busy='Writing…'>Write draft</button></div></form>"
+            f"<h2>Needs you <span class=badge>{len(todo)}</span></h2>"
+            f"{''.join(map(card, todo)) or '<div class=empty>Nothing to review. New drafts appear here before each slot.</div>'}"
+            f"<details{' open' if done and not todo else ''}><summary>History ({len(done)})</summary>"
+            f"{''.join(map(card, done)) or '<div class=empty>No posts yet.</div>'}</details>")
     return layout("Quillwork", body, msg)
 
 
-def page_settings(msg, text=None):
-    text = SETTINGS.read_text() if text is None else text
-    body = ("<h1>Settings</h1><p class=meta>profile = your voice for the AI. schedule.days use Mon..Sun, times use 24h HH:MM. "
-            "Drafts are written draft_hours_ahead before each slot.</p>"
-            f"<form method=post action=/settings><textarea name=settings rows=28 aria-label='Settings JSON' style='font-family:monospace'>{esc(text)}</textarea>"
-            "<button>Save</button></form>")
-    return layout("Settings", body, msg)
+def form_to_settings(base, f):
+    """Build settings from the Settings form; f maps field -> str, except 'days' -> list."""
+    try:
+        hours = int(f.get("draft_hours_ahead") or 24)
+    except ValueError:
+        hours = 24
+    return {**base, "model": (f.get("model") or "").strip() or "gemini-3.8-flash",
+            "profile": {**base.get("profile", {}), **{k: (f.get(k) or "").strip() for k in PROFILE_TEXT},
+                        "topics": [t.strip() for t in (f.get("topics") or "").splitlines() if t.strip()]},
+            "schedule": {"days": [d for d in DAYS if d in f.get("days", [])],
+                         "times": [t.strip() for t in (f.get("times") or "").split(",") if t.strip()],
+                         "draft_hours_ahead": hours}}
+
+
+def page_settings(msg, s=None):
+    s = s if s is not None else json.loads(SETTINGS.read_text())
+    p, sch = s.get("profile", {}), s.get("schedule", {})
+
+    def area(k, label, hint, rows=3, val=None):
+        v = p.get(k, "") if val is None else val
+        return (f"<div><label class=f for={k}>{label} <small>{hint}</small></label>"
+                f"<textarea id={k} name={k} rows={rows}>{esc(v)}</textarea></div>")
+
+    days = "".join(f"<label class=day><input type=checkbox name=days value={d}{' checked' if d in sch.get('days', []) else ''}><span>{d}</span></label>"
+                   for d in DAYS)
+    body = ("<h1>Settings</h1><p class=hint>This is what the AI knows about you. The more specific, the better the drafts.</p>"
+            "<form method=post action=/settings>"
+            "<section class=panel><span class=eyebrow>About you</span>"
+            + area("about", "Background", "role, experience, what you've built", 6)
+            + "<div class=grid2>" + area("voice", "Voice", "how you sound") + area("audience", "Audience", "who you write for") + "</div>"
+            + "</section><section class=panel style='margin-top:12px'><span class=eyebrow>Content</span>"
+            + area("topics", "Topics", "one per line", 6, "\n".join(p.get("topics", [])))
+            + area("formatting", "Format", "structure and length")
+            + "<div class=grid2>" + area("hashtags", "Hashtags", "how many and which kind", 2) + area("avoid", "Avoid", "things never to write", 2) + "</div>"
+            + "</section><section class=panel style='margin-top:12px'><span class=eyebrow>Schedule</span>"
+            f"<label class=f>Posting days</label><div class=days role=group aria-label='Posting days'>{days}</div>"
+            "<div class=grid2>"
+            f"<div><label class=f for=times>Times <small>24h, comma separated</small></label><input type=text id=times name=times value='{esc(', '.join(sch.get('times', [])))}' placeholder='09:00, 18:00'></div>"
+            f"<div><label class=f for=dh>Draft ahead <small>hours before each slot</small></label><input type=number id=dh name=draft_hours_ahead min=1 max=168 value='{esc(str(sch.get('draft_hours_ahead', 24)))}'></div>"
+            "</div></section><section class=panel style='margin-top:12px'><span class=eyebrow>Advanced</span>"
+            f"<label class=f for=model>Gemini model</label><input type=text id=model name=model value='{esc(s.get('model', 'gemini-3.8-flash'))}'>"
+            "</section><div class=save><button class=primary>Save settings</button></div></form>")
+    return layout("Settings · Quillwork", body, msg, page="settings")
 
 
 def init():
@@ -420,16 +553,15 @@ def idea(idea: str = Form("")):
 
 
 @app.post("/settings", response_class=HTMLResponse, dependencies=[Depends(same_origin)])
-def save_settings(settings: str = Form("")):
-    try:
-        s = json.loads(settings)
-        err = check_settings(s) if isinstance(s, dict) else "Settings must be a JSON object"
-    except json.JSONDecodeError as e:
-        err = f"Invalid JSON: {e}"
-    if err:
-        return page_settings(err, settings)
+async def save_settings(request: Request):
+    form = await request.form()
+    f = {k: form.get(k, "") for k in (*PROFILE_TEXT, "topics", "times", "draft_hours_ahead", "model")}
+    f["days"] = form.getlist("days")
+    s = form_to_settings(json.loads(SETTINGS.read_text()), f)
+    if err := check_settings(s):
+        return page_settings(err, s)
     SETTINGS.write_text(json.dumps(s, indent=2, ensure_ascii=False))
-    return go("/settings", "Saved")
+    return go("/settings", "Settings saved")
 
 
 if __name__ == "__main__":
