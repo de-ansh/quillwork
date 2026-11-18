@@ -30,6 +30,7 @@ Open http://localhost:8787, click **Connect LinkedIn**, then go to **Settings** 
 - **Approve** posts it at the slot time. **Post now** posts immediately. **Regenerate** rewrites the draft, using your feedback if you give any. **Skip** leaves that slot empty.
 - A draft that is not approved before its slot becomes `missed` and is never posted on its own.
 - The "Write draft" box turns your own idea into a draft for the next free slot.
+- **X (Twitter):** "Make X version" condenses a post to 280 characters or fewer. "Share on X" opens X's composer with it prefilled, and you click Post. This needs no X API or developer account.
 - Data lives in this folder: `settings.json`, `posts.db` (SQLite) and `token.json` (your LinkedIn token, chmod 600, not encrypted).
 
 ## Limits
