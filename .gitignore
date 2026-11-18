@@ -1,0 +1,6 @@
+.env
+token.json
+posts.db
+settings.json
+.venv/
+__pycache__/

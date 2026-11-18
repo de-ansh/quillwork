@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Quillwork logo">
+  <rect width="512" height="512" rx="112" fill="#1d2a4a"/>
+  <!-- feather -->
+  <path d="M138 392 C166 292 246 172 398 102 C386 168 356 212 316 236 L344 240 C302 302 230 354 138 392 Z" fill="#ffffff"/>
+  <!-- shaft -->
+  <path d="M138 392 L338 170" stroke="#1d2a4a" stroke-width="9" stroke-linecap="round"/>
+  <!-- ink line -->
+  <path d="M138 418 Q250 440 380 410" fill="none" stroke="#f4b740" stroke-width="16" stroke-linecap="round"/>
+</svg>

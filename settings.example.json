@@ -1,0 +1,17 @@
+{
+  "model": "gemini-3-flash-preview",
+  "profile": {
+    "about": "Software engineer building AI products. Write a few lines about your background, what you work on and what you know well.",
+    "voice": "Insightful and plain-spoken, first person, like talking to a smart friend. No buzzwords, no emojis.",
+    "audience": "Founders, engineers and tech hiring managers",
+    "formatting": "Strong first-line hook, a short story or concrete insight, one clear takeaway, end with a question. 120-220 words, short paragraphs.",
+    "topics": ["Building with LLMs", "Lessons from shipping side projects", "Backend engineering tips"],
+    "hashtags": "2-3 relevant hashtags on the last line",
+    "avoid": "Clickbait, 'I'm thrilled to announce', made-up statistics, hype"
+  },
+  "schedule": {
+    "days": ["Tue", "Thu"],
+    "times": ["09:00"],
+    "draft_hours_ahead": 24
+  }
+}

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quillwork</title>
+<meta name="description" content="Your ideas, written in your voice, posted on your schedule. A personal, self-hosted LinkedIn writing assistant.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<meta property="og:title" content="Quillwork">
+<meta property="og:description" content="Your ideas, written in your voice, posted on your schedule.">
+<meta property="og:image" content="logo-400.png">
+<style>
+  :root { --bg:#f7f6f2; --fg:#1b2133; --muted:#5b6275; --card:#ffffff; --line:#e3e1d9; --ink:#1d2a4a; --gold:#c98a12; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#10141f; --fg:#eceef3; --muted:#a3a9b8; --card:#182033; --line:#2a3350; --ink:#e9ecf5; --gold:#f4b740; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:17px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:880px; margin:0 auto; padding:0 16px 64px; }
+  header { display:flex; align-items:center; gap:12px; padding:20px 0; }
+  header img { width:36px; height:36px; }
+  header b { font-size:20px; letter-spacing:-.01em; }
+  header nav { margin-left:auto; display:flex; gap:18px; font-size:15px; }
+  a { color:inherit; }
+  nav a { text-decoration:none; color:var(--muted); }
+  nav a:hover { color:var(--fg); }
+  .hero { text-align:center; padding:56px 0 40px; }
+  .hero img { width:112px; height:112px; }
+  h1 { font-size:clamp(34px, 6vw, 54px); line-height:1.1; letter-spacing:-.02em; margin:20px 0 12px; }
+  h1 span { color:var(--gold); }
+  .lead { font-size:19px; color:var(--muted); max-width:560px; margin:0 auto 28px; }
+  .btn { display:inline-block; padding:11px 20px; border-radius:10px; background:var(--ink); color:var(--bg); text-decoration:none; font-weight:600; }
+  .btn.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); margin-left:8px; }
+  h2 { font-size:26px; letter-spacing:-.01em; margin:56px 0 18px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; }
+  .card b { display:block; margin-bottom:4px; }
+  .card p { margin:0; color:var(--muted); font-size:15px; }
+  .step { font-size:13px; font-weight:700; color:var(--gold); letter-spacing:.06em; }
+  pre { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; overflow-x:auto; font-size:14px; }
+  ol li { margin-bottom:6px; }
+  footer { border-top:1px solid var(--line); margin-top:64px; padding-top:20px; color:var(--muted); font-size:14px; display:flex; flex-wrap:wrap; gap:16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="logo.svg" alt="">
+    <b>Quillwork</b>
+    <nav><a href="#how">How it works</a><a href="#setup">Setup</a><a href="https://github.com/de-ansh/quillwork">GitHub</a></nav>
+  </header>
+
+  <section class="hero">
+    <img src="logo.svg" alt="Quillwork logo">
+    <h1>Your ideas, written in your voice,<br><span>posted on your schedule.</span></h1>
+    <p class="lead">Quillwork is a small, self-hosted LinkedIn writing assistant. AI drafts the post, you approve it, and it goes live at the time you picked. It runs on your own computer.</p>
+    <a class="btn" href="#setup">Get started</a><a class="btn ghost" href="https://github.com/de-ansh/quillwork">View source</a>
+  </section>
+
+  <h2 id="how">How it works</h2>
+  <div class="grid">
+    <div class="card"><div class="step">01</div><b>Describe yourself</b><p>Your background, voice, audience, format and topics, in one settings page.</p></div>
+    <div class="card"><div class="step">02</div><b>Pick your slots</b><p>Choose posting days and times once. A draft is ready a day before each slot.</p></div>
+    <div class="card"><div class="step">03</div><b>Review and approve</b><p>Edit it, regenerate it with feedback, skip it, or approve it. Nothing posts without your approval.</p></div>
+    <div class="card"><div class="step">04</div><b>It posts itself</b><p>Approved posts go to your LinkedIn profile at the scheduled time.</p></div>
+  </div>
+
+  <h2>What you get</h2>
+  <div class="grid">
+    <div class="card"><b>Your voice, not a template</b><p>Drafts follow your tone and format and avoid repeating your recent posts.</p></div>
+    <div class="card"><b>Ideas on demand</b><p>Jot down a thought and it becomes a draft in your next free slot.</p></div>
+    <div class="card"><b>Private by design</b><p>Runs on localhost. Posts and settings stay in a local SQLite file.</p></div>
+    <div class="card"><b>Tiny and hackable</b><p>One Python file built with FastAPI and Gemini. Easy to read and change.</p></div>
+  </div>
+
+  <h2 id="setup">Setup</h2>
+  <ol>
+    <li>Get a Gemini API key from <a href="https://aistudio.google.com/apikey">Google AI Studio</a>.</li>
+    <li>Create a <a href="https://www.linkedin.com/developers/apps">LinkedIn developer app</a> with <em>Sign In with LinkedIn using OpenID Connect</em> and <em>Share on LinkedIn</em>, and add the redirect URL <code>http://localhost:8787/callback</code>.</li>
+    <li>Clone the repo, add your keys, and run it:</li>
+  </ol>
+<pre>git clone https://github.com/de-ansh/quillwork && cd quillwork
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env   # GEMINI_API_KEY, LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET
+.venv/bin/python app.py   # open http://localhost:8787</pre>
+
+  <footer>
+    <span>Quillwork, a personal open-source project.</span>
+    <a href="privacy.html">Privacy policy</a>
+    <a href="https://github.com/de-ansh/quillwork">Source on GitHub</a>
+  </footer>
+</main>
+</body>
+</html>
