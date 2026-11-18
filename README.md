@@ -24,6 +24,17 @@ Personal, local LinkedIn post automation. Gemini writes a draft before each sche
 
 Open http://localhost:8787, click **Connect LinkedIn**, then go to **Settings** and fill in your profile (about, voice, audience, formatting, topics) and schedule.
 
+## Keep it running (optional)
+
+```sh
+scripts/autostart.sh install    # start at login, restart if it crashes (logs/quillwork.log)
+scripts/autostart.sh wake       # prints the pmset command that wakes the Mac 5 min before your earliest slot
+scripts/autostart.sh status     # is it running?
+scripts/autostart.sh uninstall  # remove the login item
+```
+
+A sleeping MacBook with its lid closed may only wake briefly, so keep it on power on posting days.
+
 ## How it works
 
 - Every minute it checks for upcoming slots. Each slot within `draft_hours_ahead` hours gets a draft (status: draft).
@@ -35,7 +46,7 @@ Open http://localhost:8787, click **Connect LinkedIn**, then go to **Settings** 
 
 ## Limits
 
-- It only runs while the app is running and your Mac is awake. An approved post whose slot passed while the Mac was asleep goes out as soon as the app runs again.
+- It only runs while the app is running and your Mac is awake (see Keep it running). An approved post whose slot passed while the Mac was asleep goes out as soon as the app runs again.
 - The LinkedIn token lasts about 60 days. The home page warns you, and you click reconnect.
 - Text posts only (no images yet). No engagement analytics, because LinkedIn's API doesn't provide them for personal profiles.
 
