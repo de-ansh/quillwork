@@ -119,15 +119,26 @@ def write_x(s, text):
     return out
 
 
-def write_post(s, c, idea=None, feedback=None, current=None):
-    p = s["profile"]
-    recent = [r[0][:300] for r in c.execute("SELECT text FROM posts WHERE text IS NOT NULL ORDER BY id DESC LIMIT 8")]
+def voice_examples(rows, n=3):
+    """Pick posts in the user's real voice from (text, ai_text) rows, newest first: ones they edited before approving come first."""
+    edited = [t for t, ai in rows if ai and ai.strip() != t.strip()]
+    return (edited + [t for t, _ in rows if t not in edited])[:n]
+
+
+def build_prompt(p, idea=None, recent=(), examples=(), prefs=(), feedback=None, current=None):
     system = (
         "You ghost-write LinkedIn posts for one person, in their voice.\n"
         f"About them: {p.get('about', '')}\nVoice: {p.get('voice', '')}\nAudience: {p.get('audience', '')}\n"
         f"Format: {p.get('formatting', '')}\nHashtags: {p.get('hashtags', '')}\nAvoid: {p.get('avoid', '')}\n"
-        "Output only the post text. Plain text, no markdown (LinkedIn does not render it), no preamble, under 2800 characters."
+        "Output only the post text. Plain text, no markdown (LinkedIn does not render it), no preamble, under 2800 characters.\n"
+        "Never invent numbers, metrics, timings, names or events that are not given above or in the request. "
+        "If a specific figure would help, write a placeholder in square brackets like [X ms] for the person to fill in."
     )
+    if examples:
+        system += ("\n\nPosts this person actually published. Match their voice, rhythm and length; "
+                   "do not reuse their topics or sentences:\n" + "\n---\n".join(examples))
+    if prefs:
+        system += "\n\nStanding preferences from their past feedback:\n" + "\n".join(f"- {x}" for x in prefs)
     parts = [f"Write a post about: {idea}" if idea else f"Write a post with a fresh angle on one of these topics: {', '.join(p['topics'])}"]
     if recent:
         parts.append("Do not repeat these recent posts:\n" + "\n---\n".join(recent))
@@ -135,7 +146,16 @@ def write_post(s, c, idea=None, feedback=None, current=None):
         parts.append(f"Rewrite this draft:\n{current}")
     if feedback:
         parts.append(f"Feedback to apply: {feedback}")
-    return gemini(s, system, "\n\n".join(parts))
+    return system, "\n\n".join(parts)
+
+
+def write_post(s, c, idea=None, feedback=None, current=None):
+    recent = [r[0][:300] for r in c.execute("SELECT text FROM posts WHERE text IS NOT NULL ORDER BY id DESC LIMIT 8")]
+    rows = c.execute("SELECT text, ai_text FROM posts WHERE status IN ('published','approved') AND text IS NOT NULL "
+                     "ORDER BY id DESC LIMIT 20").fetchall()
+    prefs = [r[0] for r in c.execute("SELECT text FROM feedback ORDER BY id DESC LIMIT 5")]
+    system, prompt = build_prompt(s["profile"], idea, recent, voice_examples([tuple(r) for r in rows]), prefs, feedback, current)
+    return gemini(s, system, prompt)
 
 
 # ---------- LinkedIn ----------
@@ -208,8 +228,9 @@ def notify(msg):
 
 # ---------- scheduler ----------
 def insert_draft(c, s, slot, idea=None):
-    c.execute("INSERT INTO posts(slot, idea, text, status, created) VALUES(?,?,?,?,?)",
-              (slot, idea, write_post(s, c, idea=idea), "draft", datetime.now().isoformat(timespec="seconds")))
+    text = write_post(s, c, idea=idea)
+    c.execute("INSERT INTO posts(slot, idea, text, ai_text, status, created) VALUES(?,?,?,?,?,?)",
+              (slot, idea, text, text, "draft", datetime.now().isoformat(timespec="seconds")))
     c.commit()
     notify(f"New LinkedIn draft for {pretty(slot)}: approve at {BASE}")
 
@@ -244,6 +265,9 @@ def loop():
 
 
 # ---------- actions ----------
+PLACEHOLDER = re.compile(r"\[[^\]\n]{1,40}\]")
+
+
 def act(f):
     pid, do, text = int(f.get("id", 0)), f.get("do"), f.get("text", "").strip()
     with LOCK, db() as c:
@@ -257,6 +281,8 @@ def act(f):
         if do in ("approve", "save", "post_now"):
             if not 0 < len(text) <= 3000:
                 return "Post must be 1 to 3000 characters"
+            if do != "save" and (m := PLACEHOLDER.search(text)):
+                return f"Fill in the placeholder {m[0]} before approving or posting"
             c.execute("UPDATE posts SET text=? WHERE id=?", (text, pid))
         if do == "approve":
             if p["slot"] <= slot_key(datetime.now()):
@@ -270,8 +296,11 @@ def act(f):
             msg = "Skipped"
         elif do == "regenerate":
             new = write_post(load_settings(), c, idea=p["idea"], feedback=f.get("feedback"), current=text or p["text"])
-            c.execute("UPDATE posts SET text=?, status='draft', error=NULL WHERE id=?", (new, pid))
-            msg = "Regenerated"
+            c.execute("UPDATE posts SET text=?, ai_text=?, status='draft', error=NULL WHERE id=?", (new, new, pid))
+            fb = (f.get("feedback") or "").strip()
+            if fb and not c.execute("SELECT 1 FROM feedback WHERE text=?", (fb,)).fetchone():
+                c.execute("INSERT INTO feedback(text, created) VALUES(?,?)", (fb, datetime.now().isoformat(timespec="seconds")))
+            msg = "Regenerated" + (" (feedback remembered)" if fb else "")
         elif do == "x_generate":
             c.execute("UPDATE posts SET x_text=? WHERE id=?", (write_x(load_settings(), text or p["text"]), pid))
             msg = "X version written"
@@ -354,6 +383,8 @@ label.f small{font-weight:400;color:var(--muted)}
 .day input:focus-visible+span{outline:2px solid var(--gold)}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:0 14px}
 .x{border-top:1px dashed var(--line);margin-top:14px;padding-top:12px}
+.pref{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.pref span{flex:1}.pref button{padding:4px 10px;font-size:13px}
 .save{position:sticky;bottom:0;background:var(--bg);padding:12px 0;margin-top:16px;border-top:1px solid var(--line)}
 """
 
@@ -491,8 +522,17 @@ def page_settings(msg, s=None):
 
     days = "".join(f"<label class=day><input type=checkbox name=days value={d}{' checked' if d in sch.get('days', []) else ''}><span>{d}</span></label>"
                    for d in DAYS)
+    with db() as c:
+        prefs = c.execute("SELECT id, text FROM feedback ORDER BY id DESC").fetchall()
+        n_pub = c.execute("SELECT count(*) FROM posts WHERE status='published'").fetchone()[0]
+    items = "".join(f"<form method=post action=/feedback/delete class=pref><input type=hidden name=id value={r['id']}>"
+                    f"<span>{esc(r['text'])}</span><button aria-label='Forget this preference'>Forget</button></form>" for r in prefs)
+    learned = ("<section class=panel style='margin:12px 0'><span class=eyebrow>Learned from you</span>"
+               f"<p class=hint>Drafts imitate your {min(n_pub, 3)} most recent published posts (the ones you edited come first). "
+               "Feedback you give on Regenerate is remembered here; the newest 5 are used.</p>"
+               f"{items or '<p class=hint>No feedback yet.</p>'}</section>")
     body = ("<h1>Settings</h1><p class=hint>This is what the AI knows about you. The more specific, the better the drafts.</p>"
-            "<form method=post action=/settings>"
+            + learned + "<form method=post action=/settings>"
             "<section class=panel><span class=eyebrow>About you</span>"
             + area("about", "Background", "role, experience, what you've built", 6)
             + "<div class=grid2>" + area("voice", "Voice", "how you sound") + area("audience", "Audience", "who you write for") + "</div>"
@@ -517,8 +557,11 @@ def init():
     with db() as c:
         c.execute("CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, slot TEXT UNIQUE, idea TEXT, text TEXT, "
                   "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT, x_text TEXT)")
-        if "x_text" not in [r[1] for r in c.execute("PRAGMA table_info(posts)")]:
-            c.execute("ALTER TABLE posts ADD COLUMN x_text TEXT")
+        cols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
+        for col in ("x_text", "ai_text"):
+            if col not in cols:
+                c.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
+        c.execute("CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY, text TEXT UNIQUE, created TEXT)")
 
 
 @asynccontextmanager
@@ -593,6 +636,13 @@ def idea(idea: str = Form("")):
         return go("/", new_from_idea(idea.strip()) if idea.strip() else "Idea is empty")
     except Exception as e:
         return go("/", f"Error: {e}")
+
+
+@app.post("/feedback/delete", dependencies=[Depends(same_origin)])
+def forget_feedback(id: int = Form(0)):
+    with LOCK, db() as c:
+        c.execute("DELETE FROM feedback WHERE id=?", (id,))
+    return go("/settings", "Preference forgotten")
 
 
 @app.post("/settings", response_class=HTMLResponse, dependencies=[Depends(same_origin)])
