@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Quillwork: Gemini drafts posts on your schedule, you approve them at http://localhost:8787, it publishes."""
-import html, json, os, re, secrets, sqlite3, subprocess, threading, time
+import html, json, os, re, secrets, sqlite3, ssl, subprocess, threading, time
 import urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pathlib import Path
+
+import certifi
 
 ROOT = Path(__file__).resolve().parent
 DB, SETTINGS, TOKEN = ROOT / "posts.db", ROOT / "settings.json", ROOT / "token.json"
@@ -18,6 +20,9 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 STATE = secrets.token_urlsafe(16)
 LOCK = threading.Lock()
 LAST_ERROR = ""
+GEMINI = None
+# python.org macOS builds ship no CA bundle, so urllib can't verify LinkedIn without certifi's.
+TLS = ssl.create_default_context(cafile=certifi.where())
 
 if (ROOT / ".env").exists():
     for line in (ROOT / ".env").read_text().splitlines():
@@ -89,6 +94,7 @@ def upcoming_slots(s, days=14, now=None):
 # ---------- AI ----------
 def write_post(s, c, idea=None, feedback=None, current=None):
     from google import genai  # imported lazily so the UI still starts without the SDK/key
+    from google.genai import types
 
     p = s["profile"]
     recent = [r[0][:300] for r in c.execute("SELECT text FROM posts WHERE text IS NOT NULL ORDER BY id DESC LIMIT 8")]
@@ -105,10 +111,13 @@ def write_post(s, c, idea=None, feedback=None, current=None):
         parts.append(f"Rewrite this draft:\n{current}")
     if feedback:
         parts.append(f"Feedback to apply: {feedback}")
-    it = genai.Client().interactions.create(
-        model=s.get("model", "gemini-3-flash-preview"), system_instruction=system, input="\n\n".join(parts), store=False
+    global GEMINI
+    GEMINI = GEMINI or genai.Client()  # must outlive the call: a throwaway Client closes its HTTP pool mid-request
+    r = GEMINI.models.generate_content(
+        model=s.get("model", "gemini-3.8-flash"), contents="\n\n".join(parts),
+        config=types.GenerateContentConfig(system_instruction=system),
     )
-    text = "".join(o.text or "" for o in it.outputs or [] if getattr(o, "type", "") == "text").strip()
+    text = (r.text or "").strip()
     if not text:
         raise RuntimeError("Gemini returned an empty post")
     return text
@@ -121,7 +130,7 @@ def call(url, data=None, headers=None, form=False):
         headers["Content-Type"] = "application/x-www-form-urlencoded" if form else "application/json"
         data = urllib.parse.urlencode(data).encode() if form else json.dumps(data).encode()
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=30) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=30, context=TLS) as r:
             body = r.read()
             return r.headers, (json.loads(body) if body else {})
     except urllib.error.HTTPError as e:

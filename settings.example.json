@@ -1,5 +1,5 @@
 {
-  "model": "gemini-3-flash-preview",
+  "model": "gemini-3.8-flash",
   "profile": {
     "about": "Software engineer building AI products. Write a few lines about your background, what you work on and what you know well.",
     "voice": "Insightful and plain-spoken, first person, like talking to a smart friend. No buzzwords, no emojis.",
