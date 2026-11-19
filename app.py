@@ -125,7 +125,12 @@ def voice_examples(rows, n=3):
     return (edited + [t for t, _ in rows if t not in edited])[:n]
 
 
-def build_prompt(p, idea=None, recent=(), examples=(), prefs=(), feedback=None, current=None):
+def pick_topic(topics, last_used):
+    """Least recently used topic; never-used ones first, ties keep the settings order."""
+    return min(topics, key=lambda t: last_used.get(t, "")) if topics else None
+
+
+def build_prompt(p, idea=None, recent=(), examples=(), prefs=(), feedback=None, current=None, topic=None):
     system = (
         "You ghost-write LinkedIn posts for one person, in their voice.\n"
         f"About them: {p.get('about', '')}\nVoice: {p.get('voice', '')}\nAudience: {p.get('audience', '')}\n"
@@ -139,7 +144,8 @@ def build_prompt(p, idea=None, recent=(), examples=(), prefs=(), feedback=None, 
                    "do not reuse their topics or sentences:\n" + "\n---\n".join(examples))
     if prefs:
         system += "\n\nStanding preferences from their past feedback:\n" + "\n".join(f"- {x}" for x in prefs)
-    parts = [f"Write a post about: {idea}" if idea else f"Write a post with a fresh angle on one of these topics: {', '.join(p['topics'])}"]
+    parts = [f"Write a post about: {idea}" if idea else f"Write a post with a fresh angle on this topic: {topic}" if topic
+             else f"Write a post with a fresh angle on one of these topics: {', '.join(p['topics'])}"]
     if recent:
         parts.append("Do not repeat these recent posts:\n" + "\n---\n".join(recent))
     if current:
@@ -149,12 +155,12 @@ def build_prompt(p, idea=None, recent=(), examples=(), prefs=(), feedback=None, 
     return system, "\n\n".join(parts)
 
 
-def write_post(s, c, idea=None, feedback=None, current=None):
+def write_post(s, c, idea=None, feedback=None, current=None, topic=None):
     recent = [r[0][:300] for r in c.execute("SELECT text FROM posts WHERE text IS NOT NULL ORDER BY id DESC LIMIT 8")]
     rows = c.execute("SELECT text, ai_text FROM posts WHERE status IN ('published','approved') AND text IS NOT NULL "
                      "ORDER BY id DESC LIMIT 20").fetchall()
     prefs = [r[0] for r in c.execute("SELECT text FROM feedback ORDER BY id DESC LIMIT 5")]
-    system, prompt = build_prompt(s["profile"], idea, recent, voice_examples([tuple(r) for r in rows]), prefs, feedback, current)
+    system, prompt = build_prompt(s["profile"], idea, recent, voice_examples([tuple(r) for r in rows]), prefs, feedback, current, topic)
     return gemini(s, system, prompt)
 
 
@@ -228,11 +234,22 @@ def notify(msg):
 
 # ---------- scheduler ----------
 def insert_draft(c, s, slot, idea=None):
-    text = write_post(s, c, idea=idea)
-    c.execute("INSERT INTO posts(slot, idea, text, ai_text, status, created) VALUES(?,?,?,?,?,?)",
-              (slot, idea, text, text, "draft", datetime.now().isoformat(timespec="seconds")))
+    queued = None if idea else c.execute("SELECT id, text FROM ideas ORDER BY id LIMIT 1").fetchone()
+    idea = idea or (queued and queued["text"])
+    topic = None
+    if not idea:
+        last = dict(c.execute("SELECT topic, MAX(slot) FROM posts WHERE topic IS NOT NULL GROUP BY topic").fetchall())
+        topic = pick_topic(s["profile"].get("topics", []), last)
+    text = write_post(s, c, idea=idea, topic=topic)
+    c.execute("INSERT INTO posts(slot, idea, topic, text, ai_text, status, created) VALUES(?,?,?,?,?,?,?)",
+              (slot, idea, topic, text, text, "draft", datetime.now().isoformat(timespec="seconds")))
+    if queued:  # only used up once its draft exists
+        c.execute("DELETE FROM ideas WHERE id=?", (queued["id"],))
     c.commit()
     notify(f"New LinkedIn draft for {pretty(slot)}: approve at {BASE}")
+
+
+GRACE = timedelta(hours=6)  # how late an approved post may still go out automatically
 
 
 def tick():
@@ -246,8 +263,13 @@ def tick():
             if not c.execute("SELECT 1 FROM posts WHERE slot=?", (slot_key(slot),)).fetchone():
                 insert_draft(c, s, slot_key(slot))
         nowkey = slot_key(now)
+        stale = slot_key(now - GRACE)
         for p in c.execute("SELECT * FROM posts WHERE status='approved' AND slot<=?", (nowkey,)).fetchall():
-            publish(c, p)
+            if p["slot"] >= stale:  # app was off at slot time but it's still the same day: post late
+                publish(c, p)
+            else:
+                c.execute("UPDATE posts SET status='failed', error=? WHERE id=?",
+                          (f"Quillwork was not running at {pretty(p['slot'])}. Post now or Skip.", p["id"]))
         c.execute("UPDATE posts SET status='missed' WHERE status='draft' AND slot<?", (nowkey,))
         c.commit()
 
@@ -295,7 +317,7 @@ def act(f):
             c.execute("UPDATE posts SET status='skipped' WHERE id=?", (pid,))
             msg = "Skipped"
         elif do == "regenerate":
-            new = write_post(load_settings(), c, idea=p["idea"], feedback=f.get("feedback"), current=text or p["text"])
+            new = write_post(load_settings(), c, idea=p["idea"], feedback=f.get("feedback"), current=text or p["text"], topic=p["topic"])
             c.execute("UPDATE posts SET text=?, ai_text=?, status='draft', error=NULL WHERE id=?", (new, new, pid))
             fb = (f.get("feedback") or "").strip()
             if fb and not c.execute("SELECT 1 FROM feedback WHERE text=?", (fb,)).fetchone():
@@ -313,6 +335,16 @@ def act(f):
             return "Unknown action"
         c.commit()
         return msg
+
+
+def queue_ideas(text):
+    ideas = [x.strip() for x in text.splitlines() if x.strip()]
+    if not ideas:
+        return "Idea is empty"
+    now = datetime.now().isoformat(timespec="seconds")
+    with LOCK, db() as c:
+        c.executemany("INSERT INTO ideas(text, created) VALUES(?,?)", [(x[:1000], now) for x in ideas])
+    return f"Saved {len(ideas)} idea{'s' * (len(ideas) > 1)} for upcoming slots"
 
 
 def new_from_idea(idea):
@@ -482,14 +514,20 @@ def page_home(msg):
     with db() as c:
         todo = c.execute("SELECT * FROM posts WHERE status IN ('draft','approved','failed') ORDER BY slot").fetchall()
         done = c.execute("SELECT * FROM posts WHERE status NOT IN ('draft','approved','failed') ORDER BY slot DESC LIMIT 30").fetchall()
+        queued = c.execute("SELECT * FROM ideas ORDER BY id").fetchall()
+    backlog = "".join(f"<div class=pref><span>{esc(i['text'])}</span><button name=id value={i['id']} formaction=/idea/delete "
+                      "formnovalidate aria-label='Remove idea'>Remove</button></div>" for i in queued)
     approved = sum(p["status"] == "approved" for p in todo)
     alert = f"<div class=alert role=alert><b>Scheduler error:</b> {esc(LAST_ERROR)}</div>" if LAST_ERROR else ""
     body = (f"{alert}<div class=stats><div class=stat><small>LinkedIn</small>{li}</div>"
             f"<div class=stat><small>Next slots</small>{nxt}</div>"
             f"<div class=stat><small>Queue</small><b>{approved}</b> approved · <b>{len(todo) - approved}</b> to review</div></div>"
             "<form class=panel method=post action=/idea><label class=eyebrow for=idea>New idea</label>"
-            "<textarea id=idea name=idea rows=2 required placeholder='A moment, lesson or opinion. Quillwork writes it up for your next free slot.'></textarea>"
-            "<div class=actions><button class=primary data-busy='Writing…'>Write draft</button></div></form>"
+            "<textarea id=idea name=idea rows=2 placeholder='A moment, lesson or opinion. Write draft uses your next free slot; "
+            "Save for later queues one idea per line for future slots.'></textarea>"
+            "<div class=actions><button class=primary name=do value=now data-busy='Writing…'>Write draft</button>"
+            "<button name=do value=later>Save for later</button></div>"
+            f"{f'<p class=hint>Up next ({len(queued)})</p>' + backlog if queued else ''}</form>"
             f"<h2>Needs you <span class=badge>{len(todo)}</span></h2>"
             f"{''.join(map(card, todo)) or '<div class=empty>Nothing to review. New drafts appear here before each slot.</div>'}"
             f"<details{' open' if done and not todo else ''}><summary>History ({len(done)})</summary>"
@@ -558,10 +596,11 @@ def init():
         c.execute("CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, slot TEXT UNIQUE, idea TEXT, text TEXT, "
                   "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT, x_text TEXT)")
         cols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
-        for col in ("x_text", "ai_text"):
+        for col in ("x_text", "ai_text", "topic"):
             if col not in cols:
                 c.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
         c.execute("CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY, text TEXT UNIQUE, created TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS ideas(id INTEGER PRIMARY KEY, text TEXT, created TEXT)")
 
 
 @asynccontextmanager
@@ -631,11 +670,20 @@ def action(id: int = Form(0), do: str = Form(""), text: str = Form(""), feedback
 
 
 @app.post("/idea", dependencies=[Depends(same_origin)])
-def idea(idea: str = Form("")):
+def idea(idea: str = Form(""), do: str = Form("now")):
     try:
+        if do == "later":
+            return go("/", queue_ideas(idea))
         return go("/", new_from_idea(idea.strip()) if idea.strip() else "Idea is empty")
     except Exception as e:
         return go("/", f"Error: {e}")
+
+
+@app.post("/idea/delete", dependencies=[Depends(same_origin)])
+def forget_idea(id: int = Form(0)):
+    with LOCK, db() as c:
+        c.execute("DELETE FROM ideas WHERE id=?", (id,))
+    return go("/", "Idea removed")
 
 
 @app.post("/feedback/delete", dependencies=[Depends(same_origin)])

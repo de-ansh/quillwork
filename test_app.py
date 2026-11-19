@@ -42,3 +42,11 @@ from app import PLACEHOLDER
 assert PLACEHOLDER.search("adding only [X ms] of overhead")[0] == "[X ms]"
 assert not PLACEHOLDER.search("plain post with (parens) and #tags")
 print("ok placeholder")
+
+# topic rotation: never-used first (settings order), then least recently used
+from app import pick_topic
+assert pick_topic(["a", "b", "c"], {"a": "2026-11-17T10:30"}) == "b"
+assert pick_topic(["a", "b"], {"a": "2026-11-19T10:30", "b": "2026-11-17T10:30"}) == "b"
+assert pick_topic([], {}) is None
+assert "this topic: b" in build_prompt({"topics": ["a", "b"]}, topic="b")[1]
+print("ok topics")
