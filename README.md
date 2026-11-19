@@ -30,6 +30,7 @@ Open http://localhost:8787, click **Connect LinkedIn**, then go to **Settings** 
 - **Approve** posts it at the slot time. **Post now** posts immediately. **Regenerate** rewrites the draft, using your feedback if you give any. **Skip** leaves that slot empty.
 - A draft that is not approved before its slot becomes `missed` and is never posted on its own.
 - The "Write draft" box turns your own idea into a draft for the next free slot.
+- **Links:** put a URL in an idea and Quillwork reads the page and drafts from it, with the link before the hashtags. If the page can't be read (login walls, JavaScript-only sites like X) it writes from your note alone.
 - **Save for later** queues ideas (one per line). Each scheduled draft uses the oldest queued idea; with none queued it picks the topic you posted about least recently.
 - **Started late?** Quillwork only runs while `app.py` does. On start it writes any draft due in the next 24h and posts approved posts up to 6 hours late; older ones come back as failed so you can Post now or Skip.
 - **X (Twitter):** "Make X version" condenses a post to 280 characters or fewer. "Share on X" opens X's composer with it prefilled, and you click Post. This needs no X API or developer account.
