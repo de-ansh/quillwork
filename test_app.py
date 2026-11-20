@@ -61,3 +61,11 @@ assert days["2026-11-17"][0]["label"] == "First line" and days["2026-11-17"][0][
 assert days["2026-11-19"] == [], days["2026-11-19"]  # past Thursday with no post: not shown as open
 assert days["2026-11-24"][0]["status"] == "open" and days["2026-11-26"][0]["time"] == "10:30"
 print("ok calendar")
+
+# images: card shows image + buttons only when editable; publish sends the image path
+import app
+from app import image_block
+row = {"id": 7, "image": "post-7-1.jpg"}
+assert "src='/image/7?v=post-7-1.jpg'" in image_block(row, True) and "Remove image" in image_block(row, True)
+assert "button" not in image_block(row, False) and "Add image" in image_block({"id": 7, "image": None}, True)
+print("ok images")

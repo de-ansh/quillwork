@@ -31,6 +31,7 @@ Open http://localhost:8787, click **Connect LinkedIn**, then go to **Settings** 
 - A draft that is not approved before its slot becomes `missed` and is never posted on its own.
 - The "Write draft" box turns your own idea into a draft for the next free slot.
 - **Save for later** queues ideas (one per line). Each scheduled draft uses the oldest queued idea; with none queued it picks the topic you posted about least recently.
+- **Images:** "Add image" on a draft has Gemini (`gemini-3.1-flash-image`, change with `image_model` in settings.json) draw a square illustration; it is uploaded with the post. Files live in `images/`.
 - **Calendar** shows this week and the next four: published, approved, draft and open slots.
 - **Engage reminder:** a Mac notification an hour after a post goes live, to reply to comments.
 - **Backups:** once a day `posts.db` and `settings.json` are copied to `backups/` (newest 14 kept).

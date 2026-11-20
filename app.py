@@ -6,14 +6,14 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pathlib import Path
 
 import certifi
 
 ROOT = Path(__file__).resolve().parent
 DB, SETTINGS, TOKEN = ROOT / "posts.db", ROOT / "settings.json", ROOT / "token.json"
-BACKUPS = ROOT / "backups"
+BACKUPS, IMAGES = ROOT / "backups", ROOT / "images"
 PORT = 8787
 BASE = f"http://localhost:{PORT}"
 REDIRECT = BASE + "/callback"
@@ -93,13 +93,18 @@ def upcoming_slots(s, days=14, now=None):
 
 
 # ---------- AI ----------
-def gemini(s, system, prompt):
+def client():
     from google import genai  # imported lazily so the UI still starts without the SDK/key
-    from google.genai import types
 
     global GEMINI
     GEMINI = GEMINI or genai.Client()  # must outlive the call: a throwaway Client closes its HTTP pool mid-request
-    r = GEMINI.models.generate_content(model=s.get("model", "gemini-3.8-flash"), contents=prompt,
+    return GEMINI
+
+
+def gemini(s, system, prompt):
+    from google.genai import types
+
+    r = client().models.generate_content(model=s.get("model", "gemini-3.8-flash"), contents=prompt,
                                        config=types.GenerateContentConfig(system_instruction=system))
     text = (r.text or "").strip()
     if not text:
@@ -118,6 +123,21 @@ def write_x(s, text):
     if len(out) > 280:
         out = gemini(s, system, f"Shorten this to under 270 characters, same meaning and voice:\n\n{out}")
     return out
+
+
+def make_image(s, text):
+    """One square illustration for a post. Returns (bytes, file extension)."""
+    from google.genai import types
+
+    r = client().models.generate_content(
+        model=s.get("image_model", "gemini-3.1-flash-image"),
+        contents=("Create a clean, minimal flat editorial illustration to go with this LinkedIn post. "
+                  "No text, letters, numbers, logos or real people's faces. Calm, professional colours.\n\nPost:\n" + text[:1500]),
+        config=types.GenerateContentConfig(response_modalities=["IMAGE"], image_config=types.ImageConfig(aspect_ratio="1:1")))
+    for part in (r.candidates[0].content.parts if r.candidates and r.candidates[0].content else []):
+        if part.inline_data and part.inline_data.data:
+            return part.inline_data.data, ".png" if "png" in (part.inline_data.mime_type or "") else ".jpg"
+    raise RuntimeError("Gemini returned no image")
 
 
 def voice_examples(rows, n=3):
@@ -193,28 +213,47 @@ def linkedin_version():
     return os.environ.get("LINKEDIN_VERSION") or (datetime.now().replace(day=1) - timedelta(days=45)).strftime("%Y%m")
 
 
-def linkedin_post(text):
+def linkedin_token():
     t = load_token()
     if not t or t["expires_at"] < time.time():
         raise RuntimeError("LinkedIn not connected or token expired: click Connect LinkedIn")
-    h, _ = call(
-        "https://api.linkedin.com/rest/posts",
-        {
-            "author": f"urn:li:person:{t['sub']}",
-            "commentary": to_little_text(text),
-            "visibility": "PUBLIC",
-            "distribution": {"feedDistribution": "MAIN_FEED", "targetEntities": [], "thirdPartyDistributionChannels": []},
-            "lifecycleState": "PUBLISHED",
-            "isReshareDisabledByAuthor": False,
-        },
-        {"Authorization": f"Bearer {t['access_token']}", "LinkedIn-Version": linkedin_version(), "X-Restli-Protocol-Version": "2.0.0"},
-    )
+    return t, {"Authorization": f"Bearer {t['access_token']}", "LinkedIn-Version": linkedin_version(),
+               "X-Restli-Protocol-Version": "2.0.0"}
+
+
+def linkedin_image(path):
+    """Upload an image file to LinkedIn; returns its urn:li:image id for a post."""
+    t, headers = linkedin_token()
+    _, r = call("https://api.linkedin.com/rest/images?action=initializeUpload",
+                {"initializeUploadRequest": {"owner": f"urn:li:person:{t['sub']}"}}, headers)
+    up = urllib.request.Request(r["value"]["uploadUrl"], data=Path(path).read_bytes(), method="PUT",
+                                headers={"Authorization": headers["Authorization"], "Content-Type": "application/octet-stream"})
+    try:
+        urllib.request.urlopen(up, timeout=60, context=TLS).close()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"LinkedIn image upload {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+    return r["value"]["image"]
+
+
+def linkedin_post(text, image=None):
+    t, headers = linkedin_token()
+    body = {
+        "author": f"urn:li:person:{t['sub']}",
+        "commentary": to_little_text(text),
+        "visibility": "PUBLIC",
+        "distribution": {"feedDistribution": "MAIN_FEED", "targetEntities": [], "thirdPartyDistributionChannels": []},
+        "lifecycleState": "PUBLISHED",
+        "isReshareDisabledByAuthor": False,
+    }
+    if image:
+        body["content"] = {"media": {"id": linkedin_image(image), "altText": text.split("\n")[0][:120]}}
+    h, _ = call("https://api.linkedin.com/rest/posts", body, headers)
     return h.get("x-restli-id", "")
 
 
 def publish(c, p):
     try:
-        lid = linkedin_post(p["text"])
+        lid = linkedin_post(p["text"], IMAGES / p["image"] if p["image"] else None)
         c.execute("UPDATE posts SET status='published', linkedin_id=?, published=?, error=NULL WHERE id=?",
                   (lid, datetime.now().isoformat(timespec="seconds"), p["id"]))
         msg = "Published to LinkedIn"
@@ -357,6 +396,18 @@ def act(f):
             msg = "X version written"
         elif do == "x_save":
             msg = "X text saved"
+        elif do == "image":
+            data, ext = make_image(load_settings(), text or p["text"])
+            IMAGES.mkdir(exist_ok=True)
+            name = f"post-{pid}-{int(time.time())}{ext}"  # new name each time so the browser shows the new image
+            (IMAGES / name).write_bytes(data)
+            drop_image(p)
+            c.execute("UPDATE posts SET image=? WHERE id=?", (name, pid))
+            msg = "Image created"
+        elif do == "image_remove":
+            drop_image(p)
+            c.execute("UPDATE posts SET image=NULL WHERE id=?", (pid,))
+            msg = "Image removed"
         elif do == "post_now":
             c.commit()
             return publish(c, c.execute("SELECT * FROM posts WHERE id=?", (pid,)).fetchone())
@@ -364,6 +415,11 @@ def act(f):
             return "Unknown action"
         c.commit()
         return msg
+
+
+def drop_image(p):
+    if p["image"]:
+        (IMAGES / p["image"]).unlink(missing_ok=True)
 
 
 def queue_ideas(text):
@@ -427,6 +483,7 @@ textarea:focus,input:focus{outline:2px solid var(--gold);outline-offset:1px}
 .ev .lbl{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
 @media (max-width:480px){.top>b{display:none}.top nav a{padding:6px 8px}}
 @media (max-width:700px){.cal{grid-template-columns:1fr}.dhead,.empty-day{display:none}.day-cell{min-height:0}}
+.pimg{display:block;max-width:min(100%,420px);border-radius:10px;border:1px solid var(--line);margin-top:12px}
 .post-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .when{font-weight:650}
 .chip{font-size:12px;font-weight:650;padding:1px 10px;border-radius:99px;border:1px solid currentColor;text-transform:capitalize}
@@ -542,6 +599,17 @@ def x_block(p):
             "<button name=do value=x_generate data-busy='Writing…'>Rewrite for X</button></div></div>").format(p["id"], esc(p["x_text"]))
 
 
+def image_block(p, editable):
+    img = (f"<img class=pimg src='/image/{p['id']}?v={esc(p['image'])}' alt='Image for this post' loading=lazy>"
+           if p["image"] else "")
+    if not editable:
+        return img
+    buttons = ("<button name=do value=image data-busy='Drawing…'>New image</button>"
+               "<button name=do value=image_remove>Remove image</button>" if p["image"]
+               else "<button name=do value=image data-busy='Drawing…'>Add image</button>")
+    return f"{img}<div class=actions>{buttons}</div>"
+
+
 def card(p):
     st = p["status"]
     idea = f"<span class=idea>Idea: {esc(p['idea'])}</span>" if p["idea"] else ""
@@ -553,7 +621,7 @@ def card(p):
                 if p["linkedin_id"] else "")
         when = pretty(p["published"][:16]) if p["published"] else ""
         return (f"<form class=post id=p{p['id']} method=post action=/action><input type=hidden name=id value={p['id']}>{head}"
-                f"<p class=body>{esc(p['text'] or '')}</p><p class=hint>Published {when}{link}</p>{x_block(p)}</form>")
+                f"<p class=body>{esc(p['text'] or '')}</p>{image_block(p, False)}<p class=hint>Published {when}{link}</p>{x_block(p)}</form>")
     editable = st in ("draft", "approved", "failed")
     post_now = "<button name=do value=post_now class=danger data-confirm='Publish this post on LinkedIn right now?' data-busy='Posting…'>Post now</button>"
     if editable:
@@ -568,7 +636,7 @@ def card(p):
         actions, extra = post_now, "<div class=row><span class=count></span></div>"
     return (f"<form class=post id=p{p['id']} method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
             f"<textarea name=text rows=8 data-count aria-label='Post text'>{esc(p['text'] or '')}</textarea>{extra}"
-            f"<div class=actions>{actions}</div>{x_block(p)}</form>")
+            f"<div class=actions>{actions}</div>{image_block(p, editable)}{x_block(p)}</form>")
 
 
 def page_home(msg):
@@ -669,7 +737,7 @@ def init():
         c.execute("CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, slot TEXT UNIQUE, idea TEXT, text TEXT, "
                   "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT, x_text TEXT)")
         cols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
-        for col in ("x_text", "ai_text", "topic", "reminded"):
+        for col in ("x_text", "ai_text", "topic", "reminded", "image"):
             if col not in cols:
                 c.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
         c.execute("CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY, text TEXT UNIQUE, created TEXT)")
@@ -710,6 +778,15 @@ def settings_page(msg: str = ""):
 @app.get("/calendar", response_class=HTMLResponse)
 def calendar():
     return page_calendar()
+
+
+@app.get("/image/{pid}")
+def image(pid: int):
+    with db() as c:
+        p = c.execute("SELECT image FROM posts WHERE id=?", (pid,)).fetchone()
+    if not p or not p["image"] or not (IMAGES / p["image"]).is_file():
+        raise HTTPException(404)
+    return FileResponse(IMAGES / p["image"])
 
 
 @app.get("/login")
