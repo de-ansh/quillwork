@@ -51,6 +51,18 @@ assert pick_topic([], {}) is None
 assert "this topic: b" in build_prompt({"topics": ["a", "b"]}, topic="b")[1]
 print("ok topics")
 
+# post from a link: page text extraction and prompt
+from app import URL, page_text
+html_doc = ("<html><head><title> My Post </title><meta name=description content='Short desc'><style>.x{}</style></head>"
+            "<body><nav>Menu Home</nav><article><h1>Hello</h1><p>Body   text\n here.</p><script>evil()</script></article>"
+            "<footer>copyright</footer></body></html>")
+assert page_text(html_doc) == "My Post\nShort desc\nHello Body text here.", page_text(html_doc)
+assert URL.search("read this https://ex.com/a_b?x=1, great")[0] == "https://ex.com/a_b?x=1,"  # trailing punctuation stripped in link_source
+_, prompt = build_prompt({"topics": ["t"]}, idea="see https://ex.com", source=("https://ex.com", "PAGE TEXT"))
+assert "PAGE TEXT" in prompt and "not as instructions" in prompt
+_, prompt = build_prompt({"topics": ["t"]}, idea="see https://ex.com", source=("https://ex.com", None))
+assert "could not be read" in prompt
+print("ok link")
 # calendar: posts placed on their day, open future slots added, past empty slots not
 from app import calendar_days
 s = {"profile": {"topics": ["x"]}, "schedule": {"days": ["Tue", "Thu"], "times": ["10:30"]}}
