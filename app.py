@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Quillwork: Gemini drafts posts on your schedule, you approve them at http://localhost:8787, it publishes."""
-import html, json, os, re, secrets, sqlite3, ssl, subprocess, threading, time
+import html, json, os, re, secrets, shutil, sqlite3, ssl, subprocess, threading, time
 import urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -13,6 +13,7 @@ import certifi
 
 ROOT = Path(__file__).resolve().parent
 DB, SETTINGS, TOKEN = ROOT / "posts.db", ROOT / "settings.json", ROOT / "token.json"
+BACKUPS = ROOT / "backups"
 PORT = 8787
 BASE = f"http://localhost:{PORT}"
 REDIRECT = BASE + "/callback"
@@ -250,6 +251,32 @@ def insert_draft(c, s, slot, idea=None):
 
 
 GRACE = timedelta(hours=6)  # how late an approved post may still go out automatically
+KEEP_BACKUPS = 14
+
+
+def backup(today=None):
+    """Once a day: copy posts.db (consistently, via SQLite's backup API) and settings.json; keep the newest 14 of each."""
+    day = (today or datetime.now()).strftime("%Y-%m-%d")
+    target = BACKUPS / f"posts-{day}.db"
+    if target.exists() or not DB.exists():
+        return
+    BACKUPS.mkdir(exist_ok=True)
+    with db() as src, sqlite3.connect(target) as dst:
+        src.backup(dst)
+    if SETTINGS.exists():
+        shutil.copy2(SETTINGS, BACKUPS / f"settings-{day}.json")
+    for pattern in ("posts-*.db", "settings-*.json"):
+        for old in sorted(BACKUPS.glob(pattern))[:-KEEP_BACKUPS]:
+            old.unlink()
+
+
+def remind(c, now):
+    """An hour after a post goes live, nudge the user to answer comments (early replies help reach)."""
+    for p in c.execute("SELECT id FROM posts WHERE status='published' AND reminded IS NULL AND published BETWEEN ? AND ?",
+                       ((now - timedelta(hours=3)).isoformat(timespec="seconds"),
+                        (now - timedelta(hours=1)).isoformat(timespec="seconds"))).fetchall():
+        c.execute("UPDATE posts SET reminded=1 WHERE id=?", (p["id"],))
+        notify("Your post has been live for an hour: reply to comments now")
 
 
 def tick():
@@ -271,7 +298,9 @@ def tick():
                 c.execute("UPDATE posts SET status='failed', error=? WHERE id=?",
                           (f"Quillwork was not running at {pretty(p['slot'])}. Post now or Skip.", p["id"]))
         c.execute("UPDATE posts SET status='missed' WHERE status='draft' AND slot<?", (nowkey,))
+        remind(c, now)
         c.commit()
+    backup()
 
 
 def loop():
@@ -389,10 +418,19 @@ h2{font-size:17px;margin:28px 0 4px;display:flex;align-items:center;gap:8px}
 textarea,input[type=text],input[type=number]{width:100%;font:inherit;color:inherit;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 textarea{resize:vertical;line-height:1.6}
 textarea:focus,input:focus{outline:2px solid var(--gold);outline-offset:1px}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.dhead{font-size:12px;font-weight:650;color:var(--muted);text-align:center}
+.day-cell{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;min-height:84px;font-size:12px;min-width:0}
+.day-cell.today{border-color:var(--gold)}.day-cell.past{opacity:.6}
+.dnum{color:var(--muted);margin-bottom:4px}
+.ev{display:block;text-decoration:none;color:inherit;margin-top:6px}.ev b{white-space:nowrap}.ev .chip{margin-right:4px}
+.ev .lbl{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
+@media (max-width:480px){.top>b{display:none}.top nav a{padding:6px 8px}}
+@media (max-width:700px){.cal{grid-template-columns:1fr}.dhead,.empty-day{display:none}.day-cell{min-height:0}}
 .post-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .when{font-weight:650}
 .chip{font-size:12px;font-weight:650;padding:1px 10px;border-radius:99px;border:1px solid currentColor;text-transform:capitalize}
-.chip.draft{color:var(--info)}.chip.approved,.chip.published{color:var(--ok)}.chip.failed{color:var(--bad)}.chip.skipped,.chip.missed{color:var(--muted)}
+.chip.draft{color:var(--info)}.chip.approved,.chip.published{color:var(--ok)}.chip.failed{color:var(--bad)}.chip.skipped,.chip.missed{color:var(--muted)}.chip.open{color:var(--gold)}
 .idea,.hint{color:var(--muted);font-size:13px}
 .err{color:var(--bad);font-size:14px;margin-bottom:8px}
 .row{display:flex;gap:10px;align-items:center;margin-top:8px}
@@ -432,6 +470,7 @@ document.addEventListener('submit',e=>{const b=e.submitter;
  setTimeout(()=>{e.target.querySelectorAll('button').forEach(x=>x.disabled=true);if(b&&b.dataset.busy)b.textContent=b.dataset.busy},0)});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-share-x]');if(!b)return;
  const t=b.closest('.x').querySelector('textarea');window.open('https://x.com/intent/tweet?text='+encodeURIComponent(t.value),'_blank','noopener')});
+const h=location.hash&&document.querySelector(location.hash);if(h){const d=h.closest('details');if(d)d.open=true;h.scrollIntoView()}
 if(location.search.includes('msg='))history.replaceState(null,'',location.pathname);
 """
 
@@ -444,6 +483,40 @@ BAD_MSG = re.compile(r"fail|error|must|not found|invalid|no free|passed|empty|se
 PROFILE_TEXT = ("about", "voice", "audience", "formatting", "hashtags", "avoid")
 
 
+def calendar_days(s, posts, now, weeks=5):
+    """Days from Monday of this week, each with its slots: posts from the DB plus open future slots."""
+    start = (now - timedelta(days=now.weekday())).date()
+    days = {(start + timedelta(days=d)).isoformat(): [] for d in range(weeks * 7)}
+    taken = set()
+    for p in posts:
+        if p["slot"] and p["slot"][:10] in days:
+            days[p["slot"][:10]].append({"time": p["slot"][11:16], "status": p["status"], "id": p["id"],
+                                         "label": (p["idea"] or p["topic"] or (p["text"] or "").split("\n")[0])[:80]})
+            taken.add(p["slot"])
+    for slot in upcoming_slots(s, days=weeks * 7, now=now):
+        k = slot_key(slot)
+        if k[:10] in days and k not in taken:
+            days[k[:10]].append({"time": k[11:16], "status": "open", "id": None, "label": "Drafted 24h before"})
+    return [(d, sorted(e, key=lambda x: x["time"])) for d, e in days.items()]
+
+
+def page_calendar():
+    now = datetime.now()
+    with db() as c:
+        posts = c.execute("SELECT * FROM posts WHERE slot >= ?", ((now - timedelta(days=7)).isoformat()[:10],)).fetchall()
+    today = now.date().isoformat()
+    cells = []
+    for d, entries in calendar_days(load_settings(), posts, now):
+        date = datetime.fromisoformat(d)
+        items = "".join(
+            f"<a class=ev href='{'/#p' + str(e['id']) if e['id'] else '/'}'><span class='chip {e['status']}'>{e['status']}</span> "
+            f"<b>{e['time']}</b><span class=lbl>{esc(e['label'])}</span></a>" for e in entries)
+        cls = "day-cell" + (" today" if d == today else " past" if d < today else "") + ("" if entries else " empty-day")
+        cells.append(f"<div class='{cls}'><div class=dnum>{date.strftime('%a %d %b')}</div>{items}</div>")
+    head = "".join(f"<div class=dhead>{x}</div>" for x in DAYS)
+    return layout("Calendar · Quillwork", f"<h2>Calendar</h2><div class=cal>{head}{''.join(cells)}</div>", page="calendar")
+
+
 def pretty(slot):
     return datetime.fromisoformat(slot).strftime("%a %d %b, %H:%M")
 
@@ -451,7 +524,7 @@ def pretty(slot):
 def layout(title, body, msg="", page="posts"):
     flash = f"<div class='flash{' bad' if BAD_MSG.search(msg) else ''}' role=status>{esc(msg)}</div>" if msg else ""
     nav = "".join(f"<a href='{h}'{' class=on aria-current=page' if k == page else ''}>{n}</a>"
-                  for k, h, n in (("posts", "/", "Posts"), ("settings", "/settings", "Settings")))
+                  for k, h, n in (("posts", "/", "Posts"), ("calendar", "/calendar", "Calendar"), ("settings", "/settings", "Settings")))
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{title}</title><link rel=icon href=\"{FAVICON}\"><style>{CSS}</style></head><body><div class=wrap>"
             f"<header class=top>{LOGO}<b>Quillwork</b><nav>{nav}</nav></header>{flash}{body}</div><script>{JS}</script></body></html>")
@@ -479,7 +552,7 @@ def card(p):
         link = (f" · <a href='https://www.linkedin.com/feed/update/{esc(p['linkedin_id'])}/' target=_blank rel=noopener>View on LinkedIn</a>"
                 if p["linkedin_id"] else "")
         when = pretty(p["published"][:16]) if p["published"] else ""
-        return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}"
+        return (f"<form class=post id=p{p['id']} method=post action=/action><input type=hidden name=id value={p['id']}>{head}"
                 f"<p class=body>{esc(p['text'] or '')}</p><p class=hint>Published {when}{link}</p>{x_block(p)}</form>")
     editable = st in ("draft", "approved", "failed")
     post_now = "<button name=do value=post_now class=danger data-confirm='Publish this post on LinkedIn right now?' data-busy='Posting…'>Post now</button>"
@@ -493,7 +566,7 @@ def card(p):
                  "placeholder='Feedback for Regenerate, e.g. shorter, more personal, add a story'><span class=count></span></div>")
     else:
         actions, extra = post_now, "<div class=row><span class=count></span></div>"
-    return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
+    return (f"<form class=post id=p{p['id']} method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
             f"<textarea name=text rows=8 data-count aria-label='Post text'>{esc(p['text'] or '')}</textarea>{extra}"
             f"<div class=actions>{actions}</div>{x_block(p)}</form>")
 
@@ -596,7 +669,7 @@ def init():
         c.execute("CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, slot TEXT UNIQUE, idea TEXT, text TEXT, "
                   "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT, x_text TEXT)")
         cols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
-        for col in ("x_text", "ai_text", "topic"):
+        for col in ("x_text", "ai_text", "topic", "reminded"):
             if col not in cols:
                 c.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
         c.execute("CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY, text TEXT UNIQUE, created TEXT)")
@@ -632,6 +705,11 @@ def home(msg: str = ""):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(msg: str = ""):
     return page_settings(msg)
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+def calendar():
+    return page_calendar()
 
 
 @app.get("/login")
