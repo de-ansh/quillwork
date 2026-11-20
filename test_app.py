@@ -63,3 +63,21 @@ assert "PAGE TEXT" in prompt and "not as instructions" in prompt
 _, prompt = build_prompt({"topics": ["t"]}, idea="see https://ex.com", source=("https://ex.com", None))
 assert "could not be read" in prompt
 print("ok link")
+# calendar: posts placed on their day, open future slots added, past empty slots not
+from app import calendar_days
+s = {"profile": {"topics": ["x"]}, "schedule": {"days": ["Tue", "Thu"], "times": ["10:30"]}}
+posts = [{"slot": "2026-11-17T10:30", "status": "published", "id": 1, "idea": None, "topic": None, "text": "First line\nmore"}]
+days = dict(calendar_days(s, posts, datetime(2026, 11, 20, 9, 0), weeks=2))
+assert len(days) == 14 and min(days) == "2026-11-16", min(days)
+assert days["2026-11-17"][0]["label"] == "First line" and days["2026-11-17"][0]["status"] == "published"
+assert days["2026-11-19"] == [], days["2026-11-19"]  # past Thursday with no post: not shown as open
+assert days["2026-11-24"][0]["status"] == "open" and days["2026-11-26"][0]["time"] == "10:30"
+print("ok calendar")
+
+# images: card shows image + buttons only when editable; publish sends the image path
+import app
+from app import image_block
+row = {"id": 7, "image": "post-7-1.jpg"}
+assert "src='/image/7?v=post-7-1.jpg'" in image_block(row, True) and "Remove image" in image_block(row, True)
+assert "button" not in image_block(row, False) and "Add image" in image_block({"id": 7, "image": None}, True)
+print("ok images")

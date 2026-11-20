@@ -35,6 +35,10 @@
   .card b { display:block; margin-bottom:4px; }
   .card p { margin:0; color:var(--muted); font-size:15px; }
   .step { font-size:13px; font-weight:700; color:var(--gold); letter-spacing:.06em; }
+  .shot { margin:0 0 14px; }
+  .shot img { display:block; width:100%; height:auto; border:1px solid var(--line); border-radius:14px; box-shadow:0 10px 30px rgba(20,30,60,.10); }
+  .shot figcaption { color:var(--muted); font-size:14px; margin-top:8px; text-align:center; }
+  .shots { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(380px,100%), 1fr)); gap:18px; align-items:start; }
   pre { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; overflow-x:auto; font-size:14px; }
   ol li { margin-bottom:6px; }
   footer { border-top:1px solid var(--line); margin-top:64px; padding-top:20px; color:var(--muted); font-size:14px; display:flex; flex-wrap:wrap; gap:16px; }
@@ -45,13 +49,13 @@
   <header>
     <img src="logo.svg" alt="">
     <b>Quillwork</b>
-    <nav><a href="#how">How it works</a><a href="#setup">Setup</a><a href="https://github.com/de-ansh/quillwork">GitHub</a></nav>
+    <nav><a href="#how">How it works</a><a href="#tour">Tour</a><a href="#setup">Setup</a><a href="https://github.com/de-ansh/quillwork">GitHub</a></nav>
   </header>
 
   <section class="hero">
     <img src="logo.svg" alt="Quillwork logo">
     <h1>Your ideas, written in your voice,<br><span>posted on your schedule.</span></h1>
-    <p class="lead">Quillwork is a small, self-hosted LinkedIn writing assistant. AI drafts the post, you approve it, and it goes live at the time you picked. It runs on your own computer.</p>
+    <p class="lead">Quillwork is a small, self-hosted LinkedIn writing assistant. AI drafts the post in your voice, you approve it, and it goes live at the time you picked. It runs on your own computer.</p>
     <a class="btn" href="#setup">Get started</a><a class="btn ghost" href="https://github.com/de-ansh/quillwork">View source</a>
   </section>
 
@@ -63,10 +67,28 @@
     <div class="card"><div class="step">04</div><b>It posts itself</b><p>Approved posts go to your LinkedIn profile at the scheduled time.</p></div>
   </div>
 
+  <h2 id="tour">A quick tour</h2>
+  <div class="shots">
+    <figure class="shot">
+      <picture><source srcset="screen-home-dark.png" media="(prefers-color-scheme: dark)"><img src="screen-home-light.png" width="830" height="1500" alt="Quillwork home page: LinkedIn status, next slots, an idea queue, and a draft with an AI image and Approve, Regenerate and Post now buttons" loading="lazy"></picture>
+      <figcaption>Review drafts, queue ideas and add an image.</figcaption>
+    </figure>
+    <figure class="shot">
+      <picture><source srcset="screen-calendar-dark.png" media="(prefers-color-scheme: dark)"><img src="screen-calendar-light.png" width="830" height="640" alt="Quillwork calendar showing published, draft, approved and open slots over the next weeks" loading="lazy"></picture>
+      <figcaption>See every slot for the next five weeks.</figcaption>
+    </figure>
+  </div>
+
   <h2>What you get</h2>
   <div class="grid">
-    <div class="card"><b>Your voice, not a template</b><p>Drafts follow your tone and format and avoid repeating your recent posts.</p></div>
-    <div class="card"><b>Ideas on demand</b><p>Jot down a thought and it becomes a draft in your next free slot.</p></div>
+    <div class="card"><b>Learns your voice</b><p>Drafts copy the rhythm of posts you edited and published, and remember your Regenerate feedback.</p></div>
+    <div class="card"><b>An idea queue</b><p>Save ideas for later. Each slot uses the next one, or rotates through your topics.</p></div>
+    <div class="card"><b>Write from a link</b><p>Paste an article or repo URL and the draft is built from what the page actually says.</p></div>
+    <div class="card"><b>AI images</b><p>Add a clean illustration to any draft. It is uploaded with the post.</p></div>
+    <div class="card"><b>Calendar</b><p>Published, approved, draft and open slots for the next five weeks at a glance.</p></div>
+    <div class="card"><b>Share on X</b><p>A 280-character version of each post, ready to share on X in one click.</p></div>
+    <div class="card"><b>No invented numbers</b><p>Missing figures become [placeholders] you must fill in before a post can go out.</p></div>
+    <div class="card"><b>Reminders and backups</b><p>A nudge to reply to comments an hour after posting, and a daily backup of your posts.</p></div>
     <div class="card"><b>Private by design</b><p>Runs on localhost. Posts and settings stay in a local SQLite file.</p></div>
     <div class="card"><b>Tiny and hackable</b><p>One Python file built with FastAPI and Gemini. Easy to read and change.</p></div>
   </div>

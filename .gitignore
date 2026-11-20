@@ -4,3 +4,5 @@ posts.db
 settings.json
 .venv/
 __pycache__/
+backups/
+images/
