@@ -24,6 +24,20 @@ Personal, local LinkedIn post automation. Gemini writes a draft before each sche
 
 Open http://localhost:8787, click **Connect LinkedIn**, then go to **Settings** and fill in your profile (about, voice, audience, formatting, topics) and schedule.
 
+## Run in Docker (keeps running)
+
+```sh
+mkdir -p data && cp posts.db settings.json token.json data/ 2>/dev/null  # once, to keep existing posts and login
+docker compose up -d --build
+```
+
+- Open http://localhost:8787. Data lives in `./data` (posts, settings, token, images, backups).
+- `restart: unless-stopped` brings it back after a crash or a Docker Desktop restart. Turn on Docker Desktop's "Start Docker Desktop when you sign in" so it survives a reboot.
+- Set `TZ` (default `Asia/Kolkata`) so the schedule is local time: `TZ=Europe/London docker compose up -d`.
+- Mac notifications don't work from inside the container; everything else does.
+- Logs: `docker compose logs -f`. Stop: `docker compose down`. After pulling new code: `docker compose up -d --build`.
+- The Mac must be awake at post time; a sleeping Mac pauses Docker too.
+
 ## How it works
 
 - Every minute it checks for upcoming slots. Each slot within `draft_hours_ahead` hours gets a draft (status: draft).
