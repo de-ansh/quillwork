@@ -17,17 +17,18 @@
 <main>
   <p><a href="./">&larr; Quillwork</a></p>
   <h1>Privacy policy</h1>
-  <p class="muted">Last updated: 18 November 2026</p>
+  <p class="muted">Last updated: 20 November 2026</p>
 
   <p>Quillwork is self-hosted software. You run it on your own computer, and there is no Quillwork server, account or analytics. Its maintainer never receives your data.</p>
 
   <h2>What the app stores</h2>
-  <p>Everything is stored in local files on your own computer: your settings (profile and schedule), your drafts and published posts, and your LinkedIn access token.</p>
+  <p>Everything is stored in local files on your own computer: your settings (profile and schedule), your drafts and published posts, generated images, daily backups, and your LinkedIn access token.</p>
 
   <h2>Who it talks to</h2>
   <ul>
     <li><b>LinkedIn</b>: to sign you in (your name and member ID) and to publish the posts you approve on your own profile, using the scopes <code>openid</code>, <code>profile</code> and <code>w_member_social</code>.</li>
-    <li><b>Google Gemini API</b>: your profile settings and recent posts are sent to write drafts. Requests use <code>store=false</code>. Google's own terms apply.</li>
+    <li><b>Google Gemini API</b>: your profile settings, recent posts and post text are sent to write drafts and images. Google's own terms apply.</li>
+    <li><b>Links you add</b>: when an idea contains a URL, Quillwork downloads that one page to read it.</li>
   </ul>
   <p>Quillwork does not read your feed, connections or messages, and it never posts anything you have not approved.</p>
 
