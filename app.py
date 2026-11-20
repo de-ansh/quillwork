@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Quillwork: Gemini drafts posts on your schedule, you approve them at http://localhost:8787, it publishes."""
-import html, json, os, re, secrets, sqlite3, ssl, subprocess, threading, time
+import html, json, os, re, secrets, shutil, sqlite3, ssl, subprocess, threading, time
 import urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pathlib import Path
 
 import certifi
 
 ROOT = Path(__file__).resolve().parent
 DB, SETTINGS, TOKEN = ROOT / "posts.db", ROOT / "settings.json", ROOT / "token.json"
+BACKUPS, IMAGES = ROOT / "backups", ROOT / "images"
 PORT = 8787
 BASE = f"http://localhost:{PORT}"
 REDIRECT = BASE + "/callback"
@@ -92,13 +93,18 @@ def upcoming_slots(s, days=14, now=None):
 
 
 # ---------- AI ----------
-def gemini(s, system, prompt):
+def client():
     from google import genai  # imported lazily so the UI still starts without the SDK/key
-    from google.genai import types
 
     global GEMINI
     GEMINI = GEMINI or genai.Client()  # must outlive the call: a throwaway Client closes its HTTP pool mid-request
-    r = GEMINI.models.generate_content(model=s.get("model", "gemini-3.8-flash"), contents=prompt,
+    return GEMINI
+
+
+def gemini(s, system, prompt):
+    from google.genai import types
+
+    r = client().models.generate_content(model=s.get("model", "gemini-3.8-flash"), contents=prompt,
                                        config=types.GenerateContentConfig(system_instruction=system))
     text = (r.text or "").strip()
     if not text:
@@ -117,6 +123,21 @@ def write_x(s, text):
     if len(out) > 280:
         out = gemini(s, system, f"Shorten this to under 270 characters, same meaning and voice:\n\n{out}")
     return out
+
+
+def make_image(s, text):
+    """One square illustration for a post. Returns (bytes, file extension)."""
+    from google.genai import types
+
+    r = client().models.generate_content(
+        model=s.get("image_model", "gemini-3.1-flash-image"),
+        contents=("Create a clean, minimal flat editorial illustration to go with this LinkedIn post. "
+                  "No text, letters, numbers, logos or real people's faces. Calm, professional colours.\n\nPost:\n" + text[:1500]),
+        config=types.GenerateContentConfig(response_modalities=["IMAGE"], image_config=types.ImageConfig(aspect_ratio="1:1")))
+    for part in (r.candidates[0].content.parts if r.candidates and r.candidates[0].content else []):
+        if part.inline_data and part.inline_data.data:
+            return part.inline_data.data, ".png" if "png" in (part.inline_data.mime_type or "") else ".jpg"
+    raise RuntimeError("Gemini returned no image")
 
 
 def voice_examples(rows, n=3):
@@ -192,28 +213,47 @@ def linkedin_version():
     return os.environ.get("LINKEDIN_VERSION") or (datetime.now().replace(day=1) - timedelta(days=45)).strftime("%Y%m")
 
 
-def linkedin_post(text):
+def linkedin_token():
     t = load_token()
     if not t or t["expires_at"] < time.time():
         raise RuntimeError("LinkedIn not connected or token expired: click Connect LinkedIn")
-    h, _ = call(
-        "https://api.linkedin.com/rest/posts",
-        {
-            "author": f"urn:li:person:{t['sub']}",
-            "commentary": to_little_text(text),
-            "visibility": "PUBLIC",
-            "distribution": {"feedDistribution": "MAIN_FEED", "targetEntities": [], "thirdPartyDistributionChannels": []},
-            "lifecycleState": "PUBLISHED",
-            "isReshareDisabledByAuthor": False,
-        },
-        {"Authorization": f"Bearer {t['access_token']}", "LinkedIn-Version": linkedin_version(), "X-Restli-Protocol-Version": "2.0.0"},
-    )
+    return t, {"Authorization": f"Bearer {t['access_token']}", "LinkedIn-Version": linkedin_version(),
+               "X-Restli-Protocol-Version": "2.0.0"}
+
+
+def linkedin_image(path):
+    """Upload an image file to LinkedIn; returns its urn:li:image id for a post."""
+    t, headers = linkedin_token()
+    _, r = call("https://api.linkedin.com/rest/images?action=initializeUpload",
+                {"initializeUploadRequest": {"owner": f"urn:li:person:{t['sub']}"}}, headers)
+    up = urllib.request.Request(r["value"]["uploadUrl"], data=Path(path).read_bytes(), method="PUT",
+                                headers={"Authorization": headers["Authorization"], "Content-Type": "application/octet-stream"})
+    try:
+        urllib.request.urlopen(up, timeout=60, context=TLS).close()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"LinkedIn image upload {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+    return r["value"]["image"]
+
+
+def linkedin_post(text, image=None):
+    t, headers = linkedin_token()
+    body = {
+        "author": f"urn:li:person:{t['sub']}",
+        "commentary": to_little_text(text),
+        "visibility": "PUBLIC",
+        "distribution": {"feedDistribution": "MAIN_FEED", "targetEntities": [], "thirdPartyDistributionChannels": []},
+        "lifecycleState": "PUBLISHED",
+        "isReshareDisabledByAuthor": False,
+    }
+    if image:
+        body["content"] = {"media": {"id": linkedin_image(image), "altText": text.split("\n")[0][:120]}}
+    h, _ = call("https://api.linkedin.com/rest/posts", body, headers)
     return h.get("x-restli-id", "")
 
 
 def publish(c, p):
     try:
-        lid = linkedin_post(p["text"])
+        lid = linkedin_post(p["text"], IMAGES / p["image"] if p["image"] else None)
         c.execute("UPDATE posts SET status='published', linkedin_id=?, published=?, error=NULL WHERE id=?",
                   (lid, datetime.now().isoformat(timespec="seconds"), p["id"]))
         msg = "Published to LinkedIn"
@@ -250,6 +290,32 @@ def insert_draft(c, s, slot, idea=None):
 
 
 GRACE = timedelta(hours=6)  # how late an approved post may still go out automatically
+KEEP_BACKUPS = 14
+
+
+def backup(today=None):
+    """Once a day: copy posts.db (consistently, via SQLite's backup API) and settings.json; keep the newest 14 of each."""
+    day = (today or datetime.now()).strftime("%Y-%m-%d")
+    target = BACKUPS / f"posts-{day}.db"
+    if target.exists() or not DB.exists():
+        return
+    BACKUPS.mkdir(exist_ok=True)
+    with db() as src, sqlite3.connect(target) as dst:
+        src.backup(dst)
+    if SETTINGS.exists():
+        shutil.copy2(SETTINGS, BACKUPS / f"settings-{day}.json")
+    for pattern in ("posts-*.db", "settings-*.json"):
+        for old in sorted(BACKUPS.glob(pattern))[:-KEEP_BACKUPS]:
+            old.unlink()
+
+
+def remind(c, now):
+    """An hour after a post goes live, nudge the user to answer comments (early replies help reach)."""
+    for p in c.execute("SELECT id FROM posts WHERE status='published' AND reminded IS NULL AND published BETWEEN ? AND ?",
+                       ((now - timedelta(hours=3)).isoformat(timespec="seconds"),
+                        (now - timedelta(hours=1)).isoformat(timespec="seconds"))).fetchall():
+        c.execute("UPDATE posts SET reminded=1 WHERE id=?", (p["id"],))
+        notify("Your post has been live for an hour: reply to comments now")
 
 
 def tick():
@@ -271,7 +337,9 @@ def tick():
                 c.execute("UPDATE posts SET status='failed', error=? WHERE id=?",
                           (f"Quillwork was not running at {pretty(p['slot'])}. Post now or Skip.", p["id"]))
         c.execute("UPDATE posts SET status='missed' WHERE status='draft' AND slot<?", (nowkey,))
+        remind(c, now)
         c.commit()
+    backup()
 
 
 def loop():
@@ -328,6 +396,18 @@ def act(f):
             msg = "X version written"
         elif do == "x_save":
             msg = "X text saved"
+        elif do == "image":
+            data, ext = make_image(load_settings(), text or p["text"])
+            IMAGES.mkdir(exist_ok=True)
+            name = f"post-{pid}-{int(time.time())}{ext}"  # new name each time so the browser shows the new image
+            (IMAGES / name).write_bytes(data)
+            drop_image(p)
+            c.execute("UPDATE posts SET image=? WHERE id=?", (name, pid))
+            msg = "Image created"
+        elif do == "image_remove":
+            drop_image(p)
+            c.execute("UPDATE posts SET image=NULL WHERE id=?", (pid,))
+            msg = "Image removed"
         elif do == "post_now":
             c.commit()
             return publish(c, c.execute("SELECT * FROM posts WHERE id=?", (pid,)).fetchone())
@@ -335,6 +415,11 @@ def act(f):
             return "Unknown action"
         c.commit()
         return msg
+
+
+def drop_image(p):
+    if p["image"]:
+        (IMAGES / p["image"]).unlink(missing_ok=True)
 
 
 def queue_ideas(text):
@@ -389,10 +474,20 @@ h2{font-size:17px;margin:28px 0 4px;display:flex;align-items:center;gap:8px}
 textarea,input[type=text],input[type=number]{width:100%;font:inherit;color:inherit;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 textarea{resize:vertical;line-height:1.6}
 textarea:focus,input:focus{outline:2px solid var(--gold);outline-offset:1px}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.dhead{font-size:12px;font-weight:650;color:var(--muted);text-align:center}
+.day-cell{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;min-height:84px;font-size:12px;min-width:0}
+.day-cell.today{border-color:var(--gold)}.day-cell.past{opacity:.6}
+.dnum{color:var(--muted);margin-bottom:4px}
+.ev{display:block;text-decoration:none;color:inherit;margin-top:6px}.ev b{white-space:nowrap}.ev .chip{margin-right:4px}
+.ev .lbl{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
+@media (max-width:480px){.top>b{display:none}.top nav a{padding:6px 8px}}
+@media (max-width:700px){.cal{grid-template-columns:1fr}.dhead,.empty-day{display:none}.day-cell{min-height:0}}
+.pimg{display:block;max-width:min(100%,420px);border-radius:10px;border:1px solid var(--line);margin-top:12px}
 .post-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .when{font-weight:650}
 .chip{font-size:12px;font-weight:650;padding:1px 10px;border-radius:99px;border:1px solid currentColor;text-transform:capitalize}
-.chip.draft{color:var(--info)}.chip.approved,.chip.published{color:var(--ok)}.chip.failed{color:var(--bad)}.chip.skipped,.chip.missed{color:var(--muted)}
+.chip.draft{color:var(--info)}.chip.approved,.chip.published{color:var(--ok)}.chip.failed{color:var(--bad)}.chip.skipped,.chip.missed{color:var(--muted)}.chip.open{color:var(--gold)}
 .idea,.hint{color:var(--muted);font-size:13px}
 .err{color:var(--bad);font-size:14px;margin-bottom:8px}
 .row{display:flex;gap:10px;align-items:center;margin-top:8px}
@@ -432,6 +527,7 @@ document.addEventListener('submit',e=>{const b=e.submitter;
  setTimeout(()=>{e.target.querySelectorAll('button').forEach(x=>x.disabled=true);if(b&&b.dataset.busy)b.textContent=b.dataset.busy},0)});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-share-x]');if(!b)return;
  const t=b.closest('.x').querySelector('textarea');window.open('https://x.com/intent/tweet?text='+encodeURIComponent(t.value),'_blank','noopener')});
+const h=location.hash&&document.querySelector(location.hash);if(h){const d=h.closest('details');if(d)d.open=true;h.scrollIntoView()}
 if(location.search.includes('msg='))history.replaceState(null,'',location.pathname);
 """
 
@@ -444,6 +540,40 @@ BAD_MSG = re.compile(r"fail|error|must|not found|invalid|no free|passed|empty|se
 PROFILE_TEXT = ("about", "voice", "audience", "formatting", "hashtags", "avoid")
 
 
+def calendar_days(s, posts, now, weeks=5):
+    """Days from Monday of this week, each with its slots: posts from the DB plus open future slots."""
+    start = (now - timedelta(days=now.weekday())).date()
+    days = {(start + timedelta(days=d)).isoformat(): [] for d in range(weeks * 7)}
+    taken = set()
+    for p in posts:
+        if p["slot"] and p["slot"][:10] in days:
+            days[p["slot"][:10]].append({"time": p["slot"][11:16], "status": p["status"], "id": p["id"],
+                                         "label": (p["idea"] or p["topic"] or (p["text"] or "").split("\n")[0])[:80]})
+            taken.add(p["slot"])
+    for slot in upcoming_slots(s, days=weeks * 7, now=now):
+        k = slot_key(slot)
+        if k[:10] in days and k not in taken:
+            days[k[:10]].append({"time": k[11:16], "status": "open", "id": None, "label": "Drafted 24h before"})
+    return [(d, sorted(e, key=lambda x: x["time"])) for d, e in days.items()]
+
+
+def page_calendar():
+    now = datetime.now()
+    with db() as c:
+        posts = c.execute("SELECT * FROM posts WHERE slot >= ?", ((now - timedelta(days=7)).isoformat()[:10],)).fetchall()
+    today = now.date().isoformat()
+    cells = []
+    for d, entries in calendar_days(load_settings(), posts, now):
+        date = datetime.fromisoformat(d)
+        items = "".join(
+            f"<a class=ev href='{'/#p' + str(e['id']) if e['id'] else '/'}'><span class='chip {e['status']}'>{e['status']}</span> "
+            f"<b>{e['time']}</b><span class=lbl>{esc(e['label'])}</span></a>" for e in entries)
+        cls = "day-cell" + (" today" if d == today else " past" if d < today else "") + ("" if entries else " empty-day")
+        cells.append(f"<div class='{cls}'><div class=dnum>{date.strftime('%a %d %b')}</div>{items}</div>")
+    head = "".join(f"<div class=dhead>{x}</div>" for x in DAYS)
+    return layout("Calendar · Quillwork", f"<h2>Calendar</h2><div class=cal>{head}{''.join(cells)}</div>", page="calendar")
+
+
 def pretty(slot):
     return datetime.fromisoformat(slot).strftime("%a %d %b, %H:%M")
 
@@ -451,7 +581,7 @@ def pretty(slot):
 def layout(title, body, msg="", page="posts"):
     flash = f"<div class='flash{' bad' if BAD_MSG.search(msg) else ''}' role=status>{esc(msg)}</div>" if msg else ""
     nav = "".join(f"<a href='{h}'{' class=on aria-current=page' if k == page else ''}>{n}</a>"
-                  for k, h, n in (("posts", "/", "Posts"), ("settings", "/settings", "Settings")))
+                  for k, h, n in (("posts", "/", "Posts"), ("calendar", "/calendar", "Calendar"), ("settings", "/settings", "Settings")))
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{title}</title><link rel=icon href=\"{FAVICON}\"><style>{CSS}</style></head><body><div class=wrap>"
             f"<header class=top>{LOGO}<b>Quillwork</b><nav>{nav}</nav></header>{flash}{body}</div><script>{JS}</script></body></html>")
@@ -469,6 +599,17 @@ def x_block(p):
             "<button name=do value=x_generate data-busy='Writing…'>Rewrite for X</button></div></div>").format(p["id"], esc(p["x_text"]))
 
 
+def image_block(p, editable):
+    img = (f"<img class=pimg src='/image/{p['id']}?v={esc(p['image'])}' alt='Image for this post' loading=lazy>"
+           if p["image"] else "")
+    if not editable:
+        return img
+    buttons = ("<button name=do value=image data-busy='Drawing…'>New image</button>"
+               "<button name=do value=image_remove>Remove image</button>" if p["image"]
+               else "<button name=do value=image data-busy='Drawing…'>Add image</button>")
+    return f"{img}<div class=actions>{buttons}</div>"
+
+
 def card(p):
     st = p["status"]
     idea = f"<span class=idea>Idea: {esc(p['idea'])}</span>" if p["idea"] else ""
@@ -479,8 +620,8 @@ def card(p):
         link = (f" · <a href='https://www.linkedin.com/feed/update/{esc(p['linkedin_id'])}/' target=_blank rel=noopener>View on LinkedIn</a>"
                 if p["linkedin_id"] else "")
         when = pretty(p["published"][:16]) if p["published"] else ""
-        return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}"
-                f"<p class=body>{esc(p['text'] or '')}</p><p class=hint>Published {when}{link}</p>{x_block(p)}</form>")
+        return (f"<form class=post id=p{p['id']} method=post action=/action><input type=hidden name=id value={p['id']}>{head}"
+                f"<p class=body>{esc(p['text'] or '')}</p>{image_block(p, False)}<p class=hint>Published {when}{link}</p>{x_block(p)}</form>")
     editable = st in ("draft", "approved", "failed")
     post_now = "<button name=do value=post_now class=danger data-confirm='Publish this post on LinkedIn right now?' data-busy='Posting…'>Post now</button>"
     if editable:
@@ -493,9 +634,9 @@ def card(p):
                  "placeholder='Feedback for Regenerate, e.g. shorter, more personal, add a story'><span class=count></span></div>")
     else:
         actions, extra = post_now, "<div class=row><span class=count></span></div>"
-    return (f"<form class=post method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
+    return (f"<form class=post id=p{p['id']} method=post action=/action><input type=hidden name=id value={p['id']}>{head}{err}"
             f"<textarea name=text rows=8 data-count aria-label='Post text'>{esc(p['text'] or '')}</textarea>{extra}"
-            f"<div class=actions>{actions}</div>{x_block(p)}</form>")
+            f"<div class=actions>{actions}</div>{image_block(p, editable)}{x_block(p)}</form>")
 
 
 def page_home(msg):
@@ -596,7 +737,7 @@ def init():
         c.execute("CREATE TABLE IF NOT EXISTS posts(id INTEGER PRIMARY KEY, slot TEXT UNIQUE, idea TEXT, text TEXT, "
                   "status TEXT, error TEXT, linkedin_id TEXT, created TEXT, published TEXT, x_text TEXT)")
         cols = [r[1] for r in c.execute("PRAGMA table_info(posts)")]
-        for col in ("x_text", "ai_text", "topic"):
+        for col in ("x_text", "ai_text", "topic", "reminded", "image"):
             if col not in cols:
                 c.execute(f"ALTER TABLE posts ADD COLUMN {col} TEXT")
         c.execute("CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY, text TEXT UNIQUE, created TEXT)")
@@ -632,6 +773,20 @@ def home(msg: str = ""):
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(msg: str = ""):
     return page_settings(msg)
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+def calendar():
+    return page_calendar()
+
+
+@app.get("/image/{pid}")
+def image(pid: int):
+    with db() as c:
+        p = c.execute("SELECT image FROM posts WHERE id=?", (pid,)).fetchone()
+    if not p or not p["image"] or not (IMAGES / p["image"]).is_file():
+        raise HTTPException(404)
+    return FileResponse(IMAGES / p["image"])
 
 
 @app.get("/login")
