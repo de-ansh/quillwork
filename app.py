@@ -13,8 +13,9 @@ from pathlib import Path
 import certifi
 
 ROOT = Path(__file__).resolve().parent
-DB, SETTINGS, TOKEN = ROOT / "posts.db", ROOT / "settings.json", ROOT / "token.json"
-BACKUPS, IMAGES = ROOT / "backups", ROOT / "images"
+DATA = Path(os.environ.get("QUILLWORK_DATA") or ROOT)  # where posts, settings and the token live (a volume in Docker)
+DB, SETTINGS, TOKEN = DATA / "posts.db", DATA / "settings.json", DATA / "token.json"
+BACKUPS, IMAGES = DATA / "backups", DATA / "images"
 PORT = 8787
 BASE = f"http://localhost:{PORT}"
 REDIRECT = BASE + "/callback"
@@ -849,6 +850,11 @@ def settings_page(msg: str = ""):
     return page_settings(msg)
 
 
+@app.get("/health")
+def health():
+    return {"ok": True, "scheduler_error": LAST_ERROR or None}
+
+
 @app.get("/calendar", response_class=HTMLResponse)
 def calendar():
     return page_calendar()
@@ -938,4 +944,4 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"Quillwork running at {BASE}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    uvicorn.run(app, host=os.environ.get("HOST", "127.0.0.1"), port=PORT, log_level="warning")

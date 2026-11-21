@@ -1,0 +1,13 @@
+services:
+  quillwork:
+    build: .
+    image: quillwork:latest
+    container_name: quillwork
+    restart: unless-stopped  # comes back after crashes and when Docker Desktop starts
+    env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
+    ports:
+      - "127.0.0.1:8787:8787"  # localhost only; the LinkedIn redirect is http://localhost:8787/callback
+    volumes:
+      - ./data:/data

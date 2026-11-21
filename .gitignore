@@ -6,3 +6,4 @@ settings.json
 __pycache__/
 backups/
 images/
+data/
