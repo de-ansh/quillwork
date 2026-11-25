@@ -81,3 +81,20 @@ row = {"id": 7, "image": "post-7-1.jpg"}
 assert "src='/image/7?v=post-7-1.jpg'" in image_block(row, True) and "Remove image" in image_block(row, True)
 assert "button" not in image_block(row, False) and "Add image" in image_block({"id": 7, "image": None}, True)
 print("ok images")
+
+# host check: only localhost / 127.0.0.1 are served (DNS-rebinding guard)
+import asyncio
+def status_for(host):
+    out = {}
+    async def send(m):
+        if m["type"] == "http.response.start":
+            out["status"] = m["status"]
+    async def receive():
+        return {"type": "http.request", "body": b""}
+    scope = {"type": "http", "method": "GET", "path": "/health", "query_string": b"", "scheme": "http",
+             "server": ("127.0.0.1", 8787), "headers": [(b"host", host.encode())]}
+    asyncio.run(app.app(scope, receive, send))
+    return out["status"]
+assert status_for("localhost:8787") == 200 and status_for("127.0.0.1:8787") == 200
+assert status_for("attacker.example:8787") == 400
+print("ok host check")
