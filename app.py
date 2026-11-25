@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pathlib import Path
 
 import certifi
@@ -827,6 +828,8 @@ async def lifespan(_):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+# Refuse other Host names so a DNS-rebinding page can't read drafts and settings.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
 
 
 def same_origin(request: Request):
