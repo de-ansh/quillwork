@@ -341,11 +341,92 @@ def publish(c, p):
     return msg
 
 
-def notify(msg):
+def notify(msg, draft=None):
+    """Mac notification plus a Telegram message; `draft` is a draft_msg() to send to Telegram instead of msg."""
     try:
         subprocess.run(["osascript", "-e", f"display notification {json.dumps(msg)} with title \"Quillwork\""], check=False, timeout=5)
     except Exception:
         pass
+    if TG_TOKEN and TG_CHAT:
+        try:
+            tg("sendMessage", {"chat_id": TG_CHAT, **(draft or {"text": msg})})
+        except Exception as e:
+            print("telegram send failed:", e, flush=True)
+
+
+# ---------- Telegram ----------
+TG_TOKEN, TG_CHAT = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", "")
+DRAFT_REF = re.compile(r"Draft #(\d+)")
+
+
+def tg(method, data, timeout=15):
+    req = urllib.request.Request(f"https://api.telegram.org/bot{TG_TOKEN}/{method}", json.dumps(data).encode(),
+                                 {"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=TLS) as r:
+            return json.loads(r.read())["result"]
+    except urllib.error.HTTPError as e:  # never echo the URL: it holds the bot token
+        raise RuntimeError(f"Telegram {e.code}: {e.read().decode(errors='replace')[:200]}") from None
+
+
+def draft_msg(pid, slot, text):
+    """A sendMessage body for one draft, with Approve / Regenerate / Skip buttons."""
+    body = f"Draft #{pid} for {pretty(slot) if slot else 'no slot'}\n\n{text}\n\nReply to this message with feedback to rewrite it."
+    return {"text": body[:4096], "reply_markup": {"inline_keyboard": [[
+        {"text": label, "callback_data": f"{do}:{pid}"}
+        for label, do in (("Approve", "approve"), ("Regenerate", "regenerate"), ("Skip", "skip"))]]}}
+
+
+def tg_act(do, pid, feedback=""):
+    with db() as c:
+        p = c.execute("SELECT text FROM posts WHERE id=?", (pid,)).fetchone()
+    msg = act({"id": pid, "do": do, "text": p["text"] if p and do == "approve" else "", "feedback": feedback})
+    out = [{"text": msg}]
+    if do == "regenerate" and msg.startswith("Regenerated"):
+        with db() as c:
+            p = c.execute("SELECT id, slot, text FROM posts WHERE id=?", (pid,)).fetchone()
+        out.append(draft_msg(p["id"], p["slot"], p["text"]))
+    return out
+
+
+def tg_handle(u, chat):
+    """Act on one Telegram update from the owner's chat; returns sendMessage bodies to send back."""
+    q = u.get("callback_query")
+    m = (q or {}).get("message") or u.get("message") or {}
+    cid = str((m.get("chat") or {}).get("id", ""))
+    if not cid:
+        return []
+    if not chat:
+        return [{"chat_id": cid, "text": f"Your chat id is {cid}. Put TELEGRAM_CHAT_ID={cid} in .env and restart Quillwork."}]
+    if cid != chat:
+        return []  # anyone can find the bot: ignore every other chat
+    if q:
+        do, _, pid = (q.get("data") or "").partition(":")
+        out = tg_act(do, int(pid)) if do in ("approve", "regenerate", "skip") and pid.isdigit() else [{"text": "Unknown button"}]
+    elif (ref := DRAFT_REF.match((m.get("reply_to_message") or {}).get("text", ""))) and (m.get("text") or "").strip():
+        out = tg_act("regenerate", int(ref[1]), m["text"].strip())
+    else:
+        out = [{"text": "Use a draft's buttons, or reply to a draft with feedback to rewrite it."}]
+    return [{"chat_id": cid, **x} for x in out]
+
+
+def tg_loop():
+    offset = 0
+    while True:
+        try:
+            for u in tg("getUpdates", {"offset": offset, "timeout": 50, "allowed_updates": ["message", "callback_query"]}, 65):
+                offset = u["update_id"] + 1
+                if q := u.get("callback_query"):
+                    tg("answerCallbackQuery", {"callback_query_id": q["id"]})
+                try:
+                    replies = tg_handle(u, TG_CHAT)
+                except Exception as e:
+                    replies = [{"chat_id": TG_CHAT, "text": f"Error: {e}"}] if TG_CHAT else []
+                for r in replies:
+                    tg("sendMessage", r)
+        except Exception as e:
+            print("telegram error:", e, flush=True)
+            time.sleep(10)
 
 
 # ---------- scheduler ----------
@@ -357,12 +438,12 @@ def insert_draft(c, s, slot, idea=None):
         last = dict(c.execute("SELECT topic, MAX(slot) FROM posts WHERE topic IS NOT NULL GROUP BY topic").fetchall())
         topic = pick_topic(s["profile"].get("topics", []), last)
     text = write_post(s, c, idea=idea, topic=topic)
-    c.execute("INSERT INTO posts(slot, idea, topic, text, ai_text, status, created) VALUES(?,?,?,?,?,?,?)",
-              (slot, idea, topic, text, text, "draft", datetime.now().isoformat(timespec="seconds")))
+    pid = c.execute("INSERT INTO posts(slot, idea, topic, text, ai_text, status, created) VALUES(?,?,?,?,?,?,?)",
+                    (slot, idea, topic, text, text, "draft", datetime.now().isoformat(timespec="seconds"))).lastrowid
     if queued:  # only used up once its draft exists
         c.execute("DELETE FROM ideas WHERE id=?", (queued["id"],))
     c.commit()
-    notify(f"New LinkedIn draft for {pretty(slot)}: approve at {BASE}")
+    notify(f"New LinkedIn draft for {pretty(slot)}: approve at {BASE}", draft_msg(pid, slot, text))
 
 
 GRACE = timedelta(hours=6)  # how late an approved post may still go out automatically
@@ -506,6 +587,32 @@ def queue_ideas(text):
     with LOCK, db() as c:
         c.executemany("INSERT INTO ideas(text, created) VALUES(?,?)", [(x[:1000], now) for x in ideas])
     return f"Saved {len(ideas)} idea{'s' * (len(ideas) > 1)} for upcoming slots"
+
+
+def parse_ideas(text, n=5):
+    """Gemini's idea list -> up to n distinct one-line ideas, bullets and numbering stripped."""
+    out = []
+    for line in text.splitlines():
+        line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()[:300]
+        if line and line not in out:
+            out.append(line)
+    return out[:n]
+
+
+def suggest_ideas(s, c):
+    p = s["profile"]
+    recent = [r[0][:200] for r in c.execute("SELECT text FROM posts WHERE text IS NOT NULL ORDER BY id DESC LIMIT 10")]
+    queued = [r[0] for r in c.execute("SELECT text FROM ideas")]
+    system = ("You suggest LinkedIn post ideas for one person.\n"
+              f"About them: {p.get('about', '')}\nAudience: {p.get('audience', '')}\nTopics: {', '.join(p['topics'])}\n"
+              "Output exactly 5 ideas, one per line, no numbering, no preamble. Each is one specific sentence under 25 words: an angle, "
+              "opinion, lesson or question they can write from their own experience. Never claim something happened to them.")
+    prompt = "Suggest 5 ideas for their next posts, varied across their topics."
+    if recent:
+        prompt += "\n\nThey already posted these, so avoid the same angles:\n" + "\n---\n".join(recent)
+    if queued:
+        prompt += "\n\nAlready in their idea queue, do not repeat:\n" + "\n".join(queued)
+    return parse_ideas(gemini(s, system, prompt))
 
 
 def new_from_idea(idea):
@@ -715,7 +822,7 @@ def card(p):
             f"<div class=actions>{actions}</div>{image_block(p, editable)}{x_block(p)}</form>")
 
 
-def page_home(msg):
+def page_home(msg, ideas=()):
     t = load_token()
     if t and t["expires_at"] > time.time():
         days = int((t["expires_at"] - time.time()) / 86400)
@@ -734,6 +841,10 @@ def page_home(msg):
         queued = c.execute("SELECT * FROM ideas ORDER BY id").fetchall()
     backlog = "".join(f"<div class=pref><span>{esc(i['text'])}</span><button name=id value={i['id']} formaction=/idea/delete "
                       "formnovalidate aria-label='Remove idea'>Remove</button></div>" for i in queued)
+    suggested = ("<section class=panel style='margin-top:12px'><span class=eyebrow>Ideas for your next post</span>" + "".join(
+        f"<form class=pref method=post action=/idea><input type=hidden name=idea value=\"{esc(i)}\"><span>{esc(i)}</span>"
+        "<button name=do value=now data-busy='Writing…'>Write draft</button><button name=do value=later>Save</button></form>"
+        for i in ideas) + "</section>") if ideas else ""
     approved = sum(p["status"] == "approved" for p in todo)
     alert = f"<div class=alert role=alert><b>Scheduler error:</b> {esc(LAST_ERROR)}</div>" if LAST_ERROR else ""
     body = (f"{alert}<div class=stats><div class=stat><small>LinkedIn</small>{li}</div>"
@@ -743,8 +854,10 @@ def page_home(msg):
             "<textarea id=idea name=idea rows=2 placeholder='A moment, lesson, opinion, or a link to write about. Write draft uses your next free slot; "
             "Save for later queues one idea per line for future slots.'></textarea>"
             "<div class=actions><button class=primary name=do value=now data-busy='Writing…'>Write draft</button>"
-            "<button name=do value=later>Save for later</button></div>"
+            "<button name=do value=later>Save for later</button>"
+            "<button formaction=/suggest formnovalidate data-busy='Thinking…'>Suggest ideas</button></div>"
             f"{f'<p class=hint>Up next ({len(queued)})</p>' + backlog if queued else ''}</form>"
+            f"{suggested}"
             f"<h2>Needs you <span class=badge>{len(todo)}</span></h2>"
             f"{''.join(map(card, todo)) or '<div class=empty>Nothing to review. New drafts appear here before each slot.</div>'}"
             f"<details{' open' if done and not todo else ''}><summary>History ({len(done)})</summary>"
@@ -824,6 +937,8 @@ def init():
 async def lifespan(_):
     init()
     threading.Thread(target=loop, daemon=True).start()
+    if TG_TOKEN:
+        threading.Thread(target=tg_loop, daemon=True).start()
     yield
 
 
@@ -913,6 +1028,15 @@ def idea(idea: str = Form(""), do: str = Form("now")):
         if do == "later":
             return go("/", queue_ideas(idea))
         return go("/", new_from_idea(idea.strip()) if idea.strip() else "Idea is empty")
+    except Exception as e:
+        return go("/", f"Error: {e}")
+
+
+@app.post("/suggest", response_class=HTMLResponse, dependencies=[Depends(same_origin)])
+def suggest():
+    try:
+        with db() as c:
+            return page_home("", suggest_ideas(load_settings(), c))
     except Exception as e:
         return go("/", f"Error: {e}")
 

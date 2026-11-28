@@ -34,7 +34,7 @@ docker compose up -d --build
 - Open http://localhost:8787. Data lives in `./data` (posts, settings, token, images, backups).
 - `restart: unless-stopped` brings it back after a crash or a Docker Desktop restart. Turn on Docker Desktop's "Start Docker Desktop when you sign in" so it survives a reboot.
 - Set `TZ` (default `Asia/Kolkata`) so the schedule is local time: `TZ=Europe/London docker compose up -d`.
-- Mac notifications don't work from inside the container; everything else does.
+- Mac notifications don't work from inside the container; set up the Telegram bot to get drafts and alerts there.
 - Logs: `docker compose logs -f`. Stop: `docker compose down`. After pulling new code: `docker compose up -d --build`.
 - The Mac must be awake at post time; a sleeping Mac pauses Docker too.
 
@@ -45,10 +45,12 @@ docker compose up -d --build
 - A draft that is not approved before its slot becomes `missed` and is never posted on its own.
 - The "Write draft" box turns your own idea into a draft for the next free slot.
 - **Links:** put a URL in an idea and Quillwork reads the page and drafts from it, with the link before the hashtags. If the page can't be read (login walls, JavaScript-only sites like X) it writes from your note alone.
+- **Suggest ideas** asks Gemini for 5 post ideas from your profile and topics, avoiding your recent posts and queued ideas. Each has **Write draft** and **Save** buttons. It takes 10 to 20 seconds.
 - **Save for later** queues ideas (one per line). Each scheduled draft uses the oldest queued idea; with none queued it picks the topic you posted about least recently.
 - **Images:** "Add image" on a draft has Gemini (`gemini-3.1-flash-image`, change with `image_model` in settings.json) draw a square illustration; it is uploaded with the post. Files live in `images/`.
 - **Calendar** shows this week and the next four: published, approved, draft and open slots.
 - **Engage reminder:** a Mac notification an hour after a post goes live, to reply to comments.
+- **Telegram (optional):** every new draft arrives on your phone with **Approve**, **Regenerate** and **Skip** buttons; reply to a draft with feedback to rewrite it. Publish results and the engage reminder come there too. Edit text and Post now stay on the web page. Setup: message [@BotFather](https://t.me/BotFather), send `/newbot`, put the token in `.env` as `TELEGRAM_BOT_TOKEN`, restart, send your bot any message, and it replies with the `TELEGRAM_CHAT_ID=...` line to add; restart again. The bot ignores every other chat. Run only one copy of Quillwork with the same bot token, or Telegram refuses the second one.
 - **Backups:** once a day `posts.db` and `settings.json` are copied to `backups/` (newest 14 kept).
 - **Started late?** Quillwork only runs while `app.py` does. On start it writes any draft due in the next 24h and posts approved posts up to 6 hours late; older ones come back as failed so you can Post now or Skip.
 - **X (Twitter):** "Make X version" condenses a post to 280 characters or fewer. "Share on X" opens X's composer with it prefilled, and you click Post. This needs no X API or developer account.

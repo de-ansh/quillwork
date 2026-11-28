@@ -98,3 +98,42 @@ def status_for(host):
 assert status_for("localhost:8787") == 200 and status_for("127.0.0.1:8787") == 200
 assert status_for("attacker.example:8787") == 400
 print("ok host check")
+
+# telegram: buttons act on the right post, strangers are ignored (temp DB, no network)
+import tempfile
+from pathlib import Path
+from app import draft_msg, tg_handle, DRAFT_REF
+tmp = Path(tempfile.mkdtemp())
+app.DB, app.SETTINGS = tmp / "posts.db", tmp / "settings.json"
+app.init()
+with app.db() as c:
+    ok = c.execute("INSERT INTO posts(slot, text, status) VALUES('2099-01-01T10:30', 'Hello world', 'draft')").lastrowid
+    ph = c.execute("INSERT INTO posts(slot, text, status) VALUES('2099-01-02T10:30', 'Saved [X ms]', 'draft')").lastrowid
+m = draft_msg(ok, "2099-01-01T10:30", "Hello world")
+assert DRAFT_REF.match(m["text"])[1] == str(ok) and [b["callback_data"] for b in m["reply_markup"]["inline_keyboard"][0]] == [f"approve:{ok}", f"regenerate:{ok}", f"skip:{ok}"]
+press = lambda chat, data: {"callback_query": {"id": "q", "data": data, "message": {"chat": {"id": chat}}}}
+assert tg_handle(press(999, f"approve:{ok}"), "42") == []  # stranger
+assert "TELEGRAM_CHAT_ID=999" in tg_handle(press(999, "x"), "")[0]["text"]  # setup hint when unconfigured
+r = tg_handle(press(42, f"approve:{ok}"), "42")
+assert r[0]["chat_id"] == "42" and r[0]["text"].startswith("Approved"), r
+assert "placeholder [X ms]" in tg_handle(press(42, f"approve:{ph}"), "42")[0]["text"]
+assert tg_handle(press(42, f"skip:{ph}"), "42")[0]["text"] == "Skipped"
+assert tg_handle(press(42, "delete:1"), "42")[0]["text"] == "Unknown button"
+assert "reply to a draft" in tg_handle({"message": {"chat": {"id": 42}, "text": "hi"}}, "42")[0]["text"]
+with app.db() as c:
+    assert [r[0] for r in c.execute("SELECT status FROM posts ORDER BY id")] == ["approved", "skipped"]
+print("ok telegram")
+
+# suggested ideas: parsed from Gemini's list, prompt avoids recent posts and queued ideas, escaped on the page
+from app import parse_ideas, suggest_ideas
+assert parse_ideas("1. First idea\n- Second\n\n* First idea\n2) Third\n• Fourth\nFifth\nSixth") == ["First idea", "Second", "Third", "Fourth", "Fifth"]
+seen = {}
+app.gemini = lambda s, system, prompt: seen.update(prompt=prompt) or "1. Idea A\n2. Idea B"
+app.queue_ideas("Queued thing")
+with app.db() as c:
+    got = suggest_ideas(app.load_settings(), c)
+assert got == ["Idea A", "Idea B"] and "Hello world" in seen["prompt"] and "Queued thing" in seen["prompt"], seen
+page = app.page_home("", ['Say "no" <b>'])
+assert 'value="Say &quot;no&quot; &lt;b&gt;"' in page and "Ideas for your next post" in page and "<b>" not in page.split("Ideas for your next post")[1].split("</section>")[0]
+assert "Ideas for your next post" not in app.page_home("")
+print("ok suggest ideas")
